@@ -220,9 +220,12 @@ def check_one(code6: str, cost=None):
 
 def main():
     args = sys.argv[1:]
-    if not args:
+    # ⚠ 这个脚本不用 argparse(每个参数都是「代码:成本」),所以要**手动认 --help**。
+    #   不认的话 --help 会被当成股票代码去查,在取数深处炸出一个 IndexError ——
+    #   新用户敲的第一条命令就是 --help,那是最差的第一印象。
+    if not args or any(a in ("-h", "--help", "help") for a in args):
         print(__doc__)
-        return 1
+        return 0 if args else 1
     for a in args:
         if ":" in a:
             code, cost = a.split(":", 1)

@@ -100,6 +100,14 @@ def _load_baserate():
             try:
                 import baserate
                 return baserate
+            # ⚠ 必须显式接住 SystemExit:baserate 在缺 efinance 时是
+            #   `sys.exit("需要 efinance…")`,而 SystemExit 继承自 BaseException,
+            #   **不是 Exception 的子类** —— `except Exception` 接不住它,
+            #   于是 baserate 的退出会**把整个 preport 一起带走**,
+            #   连 `preport --help` 都看不了。而 preport 本来对缺 efinance
+            #   是有降级逻辑的(ef = None,第 8 层跳过),不该因为这个死掉。
+            except SystemExit:
+                continue
             except Exception:
                 continue
     return None

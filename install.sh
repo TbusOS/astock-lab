@@ -69,11 +69,33 @@ if [ "$DO_SKILLS" = 1 ]; then
   echo "    finance-pdf-report       出金融 PDF 的版式"
 fi
 
+echo "== 3. 别名 =="
+# 生成一个可 source 的别名文件,而不是直接改用户的 ~/.bashrc ——
+# 往别人的 shell 配置里写东西是很冒犯的,而且卸载时没人记得删。
+cat > "$LAB/aliases.sh" <<ALIASEOF
+# 由 install.sh 生成。用法:source $LAB/aliases.sh
+# 想每次开终端都有:echo "source $LAB/aliases.sh" >> ~/.bashrc
+export STOCK_LAB="$LAB"
+alias astock='$VENV/bin/python $LAB/tools/astock.py'
+alias efdata='$VENV/bin/python $LAB/tools/efdata.py'
+alias hcheck='$VENV/bin/python $LAB/tools/holdings_check.py'
+alias preport='$VENV/bin/python $LAB/tools/position_report.py'
+alias capex='$VENV/bin/python $LAB/tools/capex.py'
+alias consensus='$VENV/bin/python $LAB/tools/consensus.py'
+alias baserate='$VENV/bin/python $LAB/tools/baserate.py'
+alias journal='$VENV/bin/python $LAB/tools/journal.py'
+alias probe_sources='$VENV/bin/python $LAB/tools/probe_sources.py'
+ALIASEOF
+echo "  ✅ $LAB/aliases.sh"
+echo "     source $LAB/aliases.sh        # 本次会话生效"
+echo "     echo \"source $LAB/aliases.sh\" >> ~/.bashrc   # 每次都生效"
+
 echo
-echo "== 3. 自检 =="
+echo "== 4. 自检 =="
 bash "$LAB/tools/bootstrap_check.sh" || true
 echo
 echo "下一步:"
+echo "  source $LAB/aliases.sh"
 echo "  export SEC_UA='你的名字 你的邮箱'          # SEC 要求,不设会被限流"
-echo "  $VENV/bin/python $LAB/tools/astock.py 300308"
-echo "  $VENV/bin/python $LAB/tools/position_report.py 300308:1100"
+echo "  astock 300308"
+echo "  preport 300308:1100"

@@ -110,6 +110,12 @@ def show_tick(symbol: str, rows: int = 20) -> None:
 
 
 def main() -> int:
+    # ⚠ 同 holdings_check:不用 argparse,要手动认 --help。
+    #   不认的话 --help 会落进 flags,走到「没给代码」分支打出文档但**退出码 1** ——
+    #   看着像出错了,脚本化调用还会误判成失败。
+    if any(a in ("-h", "--help", "help") for a in sys.argv[1:]):
+        print(__doc__)
+        return 0
     codes = [a for a in sys.argv[1:] if not a.startswith("--")]
     flags = [a for a in sys.argv[1:] if a.startswith("--")]
     want_l5 = "--l5" in flags or "--level5" in flags

@@ -8,10 +8,16 @@
 
 ```bash
 git clone https://github.com/TbusOS/astock-lab.git ~/astock-lab
-cd ~/astock-lab && bash install.sh
+cd ~/astock-lab && bash install.sh       # 建 .venv、装依赖、链 skills、生成别名
+source aliases.sh                        # 下面所有命令都靠它;不 source 就用全路径
 export SEC_UA='你的名字 你的邮箱'        # SEC 要求，不设会被限流
-.venv/bin/python tools/position_report.py 300308:1100
+
+preport 300308:1100                      # 九层决策报告
 ```
+
+不想用别名就写全路径：`~/astock-lab/.venv/bin/python ~/astock-lab/tools/position_report.py 300308:1100`。
+`install.sh` **不会动你的 `~/.bashrc`** —— 它只生成 `aliases.sh`，要不要常驻由你决定
+（`echo "source ~/astock-lab/aliases.sh" >> ~/.bashrc`）。
 
 ---
 
@@ -57,15 +63,19 @@ export SEC_UA='你的名字 你的邮箱'        # SEC 要求，不设会被限�
 ```bash
 # ① 给结论时记一笔，写清什么情况算你错了
 journal log 300308 --price 846 --action hold \
+        --bear 0.3 --base 0.45 --bull 0.25 --ev 11.5 \
+        --thesis "市场担心 1.6T 放量不及预期；云厂 Capex 指引已证否这条" \
         --falsify "三季报净利同比跌破 30%，或毛利率掉 5pp" --check 2026-10-31
 
 # ② 到期回来复核
 journal review
 
-# ③ 复核后蒸馏成抽象原则 —— 不是记流水账，是提炼可迁移的东西
-journal close 1 --principle "海外同业已转跌时，A 股的背离不是买点是滞后"
+# ③ 复核后结掉。--outcome 必填(right/partial/wrong)，--principle 是重点
+journal close 1 --outcome partial \
+        --actual-price 720 --note "增速守住但毛利掉了 2pp，方向对幅度错" \
+        --principle "海外同业已转跌时，A 股的背离不是买点是滞后"
 
-# ④ 看自己的命中率与概率校准:你说「70% 会涨」的那些，真涨了几成?
+# ④ 看命中率，以及你预估的期望收益和实际差多少
 journal stats
 ```
 
@@ -78,6 +88,8 @@ journal stats
 ---
 
 ## 工具
+
+下面用的是 `source aliases.sh` 之后的短名字。每个都支持 `--help`。
 
 ```bash
 astock 300308 --l5 --tick        # 行情 / 五档 / 逐笔 / 日线
@@ -142,17 +154,20 @@ bash scripts/check_gates.sh      # 退出码 0 才 push
 ```
 astock-lab/
 ├── README.md
-├── install.sh              # 建 venv + 装依赖 + 链 skills
-├── .astock-lab-root        # 根标记,脚本靠它定位工作台(别删)
-├── skills/                 # ★ 三个 Agent Skill(真身)
+├── LICENSE                 # MIT
+├── install.sh              # 建 venv + 装依赖 + 链 skills + 生成 aliases.sh
+├── .astock-lab-root        # 根标记，脚本靠它定位工作台（别删）
+├── skills/                 # ★ 三个 Agent Skill（真身）
 │   ├── stock-analysis-workflow/   分析方法 + 5 个脚本
 │   ├── astock-quote/              取数工具 + 7 个脚本
 │   └── finance-pdf-report/        PDF 版式 + 2 个脚本
-├── tools/                  # 扁平入口,软链到 skills/*/scripts/
-├── docs/                   # 环境 / 用法 / 数据全集 / 思维框架对比 / 选型
+├── tools/                  # 13 个扁平入口，除 net_probe.sh 外都软链到 skills/*/scripts/
+├── docs/                   # 环境 / 用法 / 数据全集 / 思维框架对比 / 选型 / 私有副本
 ├── scripts/                # 闸与维护脚本
-├── data/                   # 取数落盘与决策记录(不受 git 管)
-└── repos/                  # 第三方开源仓(install.sh 拉,不受 git 管)
+├── private/                # 你自己的东西（持仓、报告、笔记）—— 本仓只有个占位
+├── data/                   # 取数落盘与决策记录（不受 git 管）
+├── repos/                  # 第三方开源仓（install.sh 拉，不受 git 管）
+└── aliases.sh              # install.sh 生成，含本机绝对路径（不受 git 管）
 ```
 
 ---
