@@ -49,6 +49,14 @@ cat > private/.gitignore <<'EOF'
 # 公开仓的 .gitignore 写的是 `private/*`（只排除内容，不排除目录本身），
 # 所以这里可以把内容反选回来。从公开仓同步时不会冲突：公开仓没有这个文件。
 !*
+
+# 但原始会话 transcript 不进仓（后写的规则覆盖前面的 !*）：
+#   ① 体积无上限，一次长会话就是几 MB，仓会越来越沉
+#   ② 里面是完整的工具输出与环境细节（本机 IP、路径、临时凭据的上下文），
+#      即使是私有仓也没必要长期留存
+#   ③ 有价值的是你自己整理的摘要，不是流水
+# 要留就留 sessions/ 下的摘要 .md。
+sessions/raw/
 EOF
 echo "  ✅ private/.gitignore"
 cat > data/.gitignore <<'EOF'
