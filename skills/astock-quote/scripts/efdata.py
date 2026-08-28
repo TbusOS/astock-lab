@@ -161,6 +161,21 @@ STABLE = {
         "datacenter-web",
         lambda a: _survey(a),   # lambda 延迟求值:STABLE 字典在 _survey 定义之前构建
     ),
+    "hksc": (
+        "香港中央结算多期持股序列(需 <代码>;比十大股东单期长得多)",
+        "datacenter(securities)",
+        lambda a: _hksc(a),
+    ),
+    "northbound": (
+        "北向个股持仓(需 <代码>;--daily 看停更前的日度序列)",
+        "datacenter-web",
+        lambda a: _northbound(a),
+    ),
+    "ann": (
+        "公司公告(需 <代码>;含投资者关系记录、业绩预告)",
+        "np-anotice-stock",
+        lambda a: _ann(a),
+    ),
     "fundcodes": (
         "某类型基金代码全表(--type gp股票型/hh混合型/zq债券型/zs指数型/etf/qdii)",
         "fund.eastmoney",
@@ -242,6 +257,132 @@ def _em_datacenter(report_name, filters="", page_size=50, sort_col="", desc=True
     if not r or not r.get("data"):
         raise RuntimeError(f"东财返回空:{d.get('message')}")
     return pd.DataFrame(r["data"])
+
+
+def _em_get(url, params, referer="https://data.eastmoney.com/", timeout=25):
+    """通用 JSON GET —— 有几个东财接口不在 datacenter-web 上,参数形态也不同。"""
+    import json
+    import urllib.parse
+    import urllib.request
+    req = urllib.request.Request(
+        url + "?" + urllib.parse.urlencode(params),
+        headers={"User-Agent": "Mozilla/5.0 (X11; Linux x86_64) Chrome/120",
+                 "Referer": referer,
+                 "Accept": "application/json,text/html,*/*;q=0.8"})
+    with urllib.request.urlopen(req, timeout=timeout) as f:
+        return json.loads(f.read())
+
+
+def _hksc(a):
+    """香港中央结算(港资)多期持股序列。
+
+    ⚠ 这个接口在 **datacenter.eastmoney.com/securities/**,不是常用的
+    datacenter-web,参数也多了 source=HSF10 & client=PC,别套 _em_datacenter。
+
+    ★ 判方向要用**股数**不是比例:持股数增加但占总股本比例下降,
+      那是**股本摊薄**(增发/转股),不是港资减仓。只看比例会看反。
+    """
+    import pandas as pd
+    code = _need(a, "code")
+    j = _em_get("https://datacenter.eastmoney.com/securities/api/data/v1/get",
+                {"reportName": "RPT_F10_EH_HOLDERS", "columns": "ALL",
+                 "filter": f'(SECURITY_CODE="{code}")(HOLDER_NAME="香港中央结算有限公司")',
+                 "pageNumber": "1", "pageSize": str(200 if a.all else max(a.head, 8)),
+                 "sortTypes": "-1", "sortColumns": "END_DATE",
+                 "source": "HSF10", "client": "PC"},
+                referer="https://emweb.securities.eastmoney.com/")
+    rows = ((j.get("result") or {}).get("data")) or []
+    if not rows:
+        raise RuntimeError(f"{code} 没有香港中央结算持股记录(可能不是陆股通标的)")
+    out = []
+    for r in rows:
+        sh, chg = r.get("HOLD_NUM"), r.get("HOLD_NUM_CHANGE")
+        try:
+            sh = float(sh)
+        except (TypeError, ValueError):
+            continue
+        try:
+            chg = float(chg)
+            direction = "增持" if chg > 0 else ("减持" if chg < 0 else "不变")
+        except (TypeError, ValueError):
+            chg, direction = None, ("新进" if "新进" in str(r.get("HOLD_NUM_CHANGE") or "")
+                                    else "未知")
+        out.append({"报告期": str(r.get("END_DATE") or "")[:10],
+                    "持股万股": round(sh / 1e4, 2),
+                    "占总股本%": r.get("HOLD_NUM_RATIO"),
+                    "变动万股": None if chg is None else round(chg / 1e4, 2),
+                    "变动比例%": r.get("CHANGE_RATIO"),
+                    "方向": direction})
+    df = pd.DataFrame(out).sort_values("报告期")
+    return df
+
+
+def _northbound(a):
+    """北向个股持仓。季度表仍在更新;日度表停在监管停更前(约 2024-08-16)。
+
+    ⚠ 这里给的是**持仓**不是**净买入**。2024-08-19 起交易所不再公布单票
+      日度北向净买入 —— 那是监管改了披露规则,不是接口坏了,没有免费替代。
+      持仓的相邻期差可以推方向,但那是季度粒度。
+    """
+    import pandas as pd
+    code = _need(a, "code")
+    if a.daily:
+        df = _em_datacenter(
+            "RPT_MUTUAL_HOLDSTOCKNDATE_STA",
+            filters=f'(SECURITY_CODE="{code}")(INTERVAL_TYPE="1")',
+            page_size=200 if a.all else max(a.head, 10),
+            sort_col="TRADE_DATE")
+        cols = {"TRADE_DATE": "日期", "HOLD_SHARES": "持股数",
+                "HOLD_MARKET_CAP": "持股市值", "A_SHARES_RATIO": "占总股本%",
+                "FREE_SHARES_RATIO": "占流通%", "ADD_SHARES_REPAIR": "增减股数"}
+    else:
+        df = _em_datacenter(
+            "RPT_MUTUAL_HOLDSTOCKNORTH_STA",
+            filters=f'(SECURITY_CODE="{code}")',
+            page_size=200 if a.all else max(a.head, 10),
+            sort_col="TRADE_DATE")
+        cols = {"TRADE_DATE": "日期", "HOLD_SHARES": "持股数",
+                "HOLD_MARKET_CAP": "持股市值",
+                "A_SHARES_RATIO": "占总股本%", "FREE_SHARES_RATIO": "占流通%"}
+    keep = [c for c in cols if c in df.columns]
+    out = df[keep].rename(columns=cols)
+    if "日期" in out.columns:
+        out["日期"] = out["日期"].astype(str).str[:10]
+    for c in ("持股数", "持股市值", "增减股数"):
+        if c in out.columns:
+            out[c] = pd.to_numeric(out[c], errors="coerce")
+    if "持股数" in out.columns:
+        out["持股万股"] = (out["持股数"] / 1e4).round(2)
+        out = out.drop(columns=["持股数"])
+    return out.sort_values("日期") if "日期" in out.columns else out
+
+
+def _ann(a):
+    """公司公告。投资者关系记录、业绩预告、重大合同都在这。
+
+    ⚠ 这个接口在 **np-anotice-stock.eastmoney.com**,参数是下划线风格
+      (page_size / stock_list),跟 datacenter-web 完全两套,别套。
+    """
+    import pandas as pd
+    code = _need(a, "code")
+    j = _em_get("https://np-anotice-stock.eastmoney.com/api/security/ann",
+                {"sr": "-1", "page_size": str(100 if a.all else max(a.head, 20)),
+                 "page_index": "1", "ann_type": "A", "client_source": "web",
+                 "stock_list": code, "f_node": "0", "s_node": "0"})
+    d = j.get("data") or {}
+    rows = d.get("list") if isinstance(d, dict) else d
+    if not rows:
+        raise RuntimeError(f"{code} 没取到公告")
+    out = []
+    for r in rows:
+        art = r.get("art_code") or r.get("info_code") or ""
+        out.append({
+            "日期": (r.get("notice_date") or "")[:10],
+            "标题": r.get("notice_title") or r.get("title") or "",
+            "链接": (f"https://data.eastmoney.com/notices/detail/{code}/{art}.html"
+                     if art else ""),
+        })
+    return pd.DataFrame(out)
 
 
 def _survey(a):
@@ -357,6 +498,8 @@ def main():
     p.add_argument("--list", action="store_true", help="列出全部子命令")
     p.add_argument("--check", action="store_true", help="探测各数据源当前可用性")
     p.add_argument("--head", type=int, default=15, help="显示前 N 行(默认 15)")
+    p.add_argument("--daily", action="store_true",
+                   help="northbound:看停更前的日度持仓序列(默认看季度)")
     p.add_argument("--all", action="store_true", help="显示全部行")
     p.add_argument("--csv", metavar="文件", help="结果存 CSV(utf-8-sig,Excel 可直接开)")
     p.add_argument("--start", help="lhb:开始日期 如 2026-08-01")

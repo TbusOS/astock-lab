@@ -111,6 +111,11 @@ def _load_sibling(module, skill):
     return None
 
 
+try:
+    import efdata as _ef   # 同一个 skill,直接 import;缺依赖时降级不中断
+except Exception:
+    _ef = None
+
 br = _load_sibling("baserate", "stock-analysis-workflow")
 md2html = _load_sibling("md2html", "finance-pdf-report")
 
@@ -390,6 +395,69 @@ def sec_chips(code, price):
                 hit = True
         except Exception:
             pass
+    # ── 港资(香港中央结算)多期持股 ──────────────────────────────────
+    # 比十大股东那张单期表长得多,能看出**趋势**而不只是一个截面。
+    if _ef is not None:
+        # ⚠ 别用 `class _A: code = code` —— 类体里同名赋值会自我遮蔽
+        #   (右侧查的是还没赋值的类作用域名),直接 NameError。
+        _a = argparse.Namespace(code=code, head=8, all=False, daily=False)
+        try:
+            h = _ef._hksc(_a)
+            if len(h):
+                say(f"**港资持股（香港中央结算，近 {len(h)} 期）**")
+                say()
+                say("| 报告期 | 持股万股 | 占总股本% | 变动万股 | 方向 |")
+                say("|---|---|---|---|---|")
+                for _, x in h.tail(8).iterrows():
+                    chg = x["变动万股"]
+                    chg_s = "—" if pd.isna(chg) else f"{chg:+,.0f}"
+                    say(f"| {x['报告期']} | {x['持股万股']:,.0f} | "
+                        f"{x['占总股本%']} | {chg_s} | {x['方向']} |")
+                say()
+                last = h.iloc[-1]
+                snap("chips", hksc_shares_wan=float(last["持股万股"]),
+                     hksc_pct=float(last["占总股本%"]) if pd.notna(last["占总股本%"]) else None,
+                     hksc_period=str(last["报告期"]))
+                # ★ 这条判断很容易看反,单独写出来
+                if len(h) >= 2:
+                    prev = h.iloc[-2]
+                    up_shares = last["持股万股"] > prev["持股万股"]
+                    dn_pct = (pd.notna(last["占总股本%"]) and pd.notna(prev["占总股本%"])
+                              and last["占总股本%"] < prev["占总股本%"])
+                    if up_shares and dn_pct:
+                        say(f"> ⚠️ **持股数增加但占总股本比例下降**"
+                            f"（{prev['占总股本%']}% → {last['占总股本%']}%）"
+                            f"—— 这是**股本摊薄**（增发 / 转股 / 激励授予），"
+                            f"**不是港资减仓**。判方向要看股数不看比例，只看比例会看反。")
+                        say()
+                hit = True
+        except Exception as e:
+            say(f"（港资持股取数失败：{type(e).__name__}）")
+            say()
+
+    # ── 北向个股持仓 ────────────────────────────────────────────────
+    if _ef is not None:
+        _b = argparse.Namespace(code=code, head=4, all=False, daily=False)
+        try:
+            nb = _ef._northbound(_b)
+            if len(nb):
+                x = nb.iloc[-1]
+                say(f"**北向个股持仓**（官方口径，{x['日期']}）："
+                    f"**{x['持股万股']:,.0f} 万股**，占总股本 {x['占总股本%']}%，"
+                    f"占流通 {x['占流通%']}%")
+                say()
+                snap("chips", nb_shares_wan=float(x["持股万股"]),
+                     nb_pct_total=float(x["占总股本%"]) if pd.notna(x["占总股本%"]) else None,
+                     nb_asof=str(x["日期"]))
+                say("> ⚠️ 这是**持仓**不是**净买入**。2024-08-19 起交易所不再公布"
+                    "单票日度北向净买入 —— 那是监管改了披露规则，不是接口坏了，"
+                    "没有免费替代。停更前的日度序列仍可查：`efdata northbound <代码> --daily`。")
+                say()
+                hit = True
+        except Exception as e:
+            say(f"（北向持仓取数失败：{type(e).__name__}）")
+            say()
+
     if not hit:
         say("（本层全部取数失败）")
         say()
@@ -734,16 +802,95 @@ def _dig(d, path):
     return cur
 
 
+def load_open_journal(code):
+    """读这只票**未结**的决策记录 —— 里面有当时的 thesis 与 falsify。
+
+    ★ 为什么快照必须带上这个:只记数字的话,复核时能看到「净利同比掉了
+      19pp」,却看不到「我上次凭什么认为这不要紧」。**没有当时的推理,
+      就无法判断是推理错了还是世界变了** —— 而这两者的改进方向完全相反:
+      推理错了要改方法,世界变了只要更新事实。自我进化改的是方法,
+      所以必须能把这两种情况分开。
+    """
+    import json
+    f = _lab_root() / "data" / "journal.jsonl"
+    if not f.exists():
+        return None
+    rows = []
+    for ln in f.read_text(encoding="utf-8").splitlines():
+        ln = ln.strip()
+        if not ln:
+            continue
+        try:
+            r = json.loads(ln)
+        except ValueError:
+            continue
+        if r.get("code") == code and r.get("status") == "open":
+            rows.append(r)
+    return rows[-1] if rows else None
+
+
+def sec_reasoning(prev, jr, code):
+    """第 0b 节:上次是怎么想的,现在还成立吗。
+
+    这一节是**给 AI 读的**多于给人读的 —— 下一轮分析时它会被读回来,
+    作为「上次的推理」的输入。人读第 0 节的数字变化就够了。
+    """
+    if not jr:
+        return
+    say("### 上次是怎么想的")
+    say()
+    say(f"决策 **#{jr['id']}**（{jr.get('logged_at', '')[:10]} 记录，"
+        f"复核日 {jr.get('check_date', '未定')}，当时价 {jr.get('price')}）"
+        f"　·　动作 **{jr.get('action')}**")
+    say()
+    if jr.get("thesis"):
+        say(f"**当时的预期差判断**：{jr['thesis']}")
+        say()
+    if jr.get("probs"):
+        p = jr["probs"]
+        say(f"**当时的概率假设**：bear {p.get('bear')} / base {p.get('base')} / "
+            f"bull {p.get('bull')}"
+            + (f"　·　EV **{jr['ev']:+.1f}%**" if jr.get("ev") is not None else ""))
+        say()
+    if jr.get("falsify"):
+        say(f"**当时写下的可证伪判据**：{jr['falsify']}")
+        say()
+    say("> **这一节是给下一轮分析读的。**只有数字变化说明不了问题 —— "
+        "净利同比掉 19pp，可能是**上次的推理错了**（该改方法），"
+        "也可能是**世界变了而推理本身没问题**（只要更新事实）。"
+        "两者的改进方向相反，分不开就没法进化。")
+    say()
+    say("**下一步该做的**：拿上面的可证伪判据，逐条对第 0 节的「这次」列。"
+        "触发了 → `journal close` 并蒸馏原则；没触发但在逼近 → 记一笔新的。")
+    say()
+
+
 def snapshot_dir(code):
     return _lab_root() / "data" / SNAP_DIR_NAME / code
 
 
-def write_snapshot(code, name, cost):
-    """落一份结构化快照。同一天重跑覆盖当天那份。"""
+def write_snapshot(code, name, cost, jr=None):
+    """落一份结构化快照。同一天重跑覆盖当天那份。
+
+    ★ 快照里**同时存事实和当时的推理**。只存事实的话,下次回来只能看到
+      「数变了」,看不到「我上次凭什么这么判断」—— 那样没法分辨
+      「推理错了」和「世界变了」,而自我进化要改的恰恰是前者。
+    """
     import json
     _SNAP.update({"code": code, "name": name, "cost": cost,
                   "date": time.strftime("%Y-%m-%d"),
                   "ts": time.strftime("%Y-%m-%d %H:%M")})
+    if jr:
+        _SNAP["reasoning"] = {
+            "journal_id": jr.get("id"),
+            "logged_at": jr.get("logged_at"),
+            "action": jr.get("action"),
+            "thesis": jr.get("thesis"),
+            "falsify": jr.get("falsify"),
+            "probs": jr.get("probs"),
+            "ev": jr.get("ev"),
+            "check_date": jr.get("check_date"),
+        }
     d = snapshot_dir(code)
     try:
         d.mkdir(parents=True, exist_ok=True)
@@ -820,6 +967,22 @@ def sec_diff(prev, code):
         "第 9 层每条判据后面都有阈值，拿这里的「这次」去对。"
         "判据接近触发而你没动作，那就是该记进 `journal` 的东西。")
     say()
+    # 上一份快照里存的推理 —— 优先用快照里的,那是**当时**的版本;
+    # journal 里的可能已经被后来的记录覆盖。
+    if prev.get("reasoning"):
+        r = prev["reasoning"]
+        say("### 上次快照里存的推理")
+        say()
+        if r.get("thesis"):
+            say(f"- **当时的判断**：{r['thesis']}")
+        if r.get("falsify"):
+            say(f"- **当时的可证伪判据**：{r['falsify']}")
+        if r.get("probs"):
+            p = r["probs"]
+            say(f"- **当时的概率**：bear {p.get('bear')} / base {p.get('base')} / "
+                f"bull {p.get('bull')}"
+                + (f"，EV {r['ev']:+.1f}%" if r.get("ev") is not None else ""))
+        say()
 
 
 def _days_between(a, b):
@@ -834,6 +997,7 @@ def _days_between(a, b):
 
 def run_one(code, cost, args):
     prev = load_prev_snapshot(code, time.strftime("%Y-%m-%d"))
+    jr = load_open_journal(code)
     name, price = sec_position(code, cost)
     fund = sec_fundamental(code)
     sec_valuation(code, price, fund)
@@ -851,8 +1015,9 @@ def run_one(code, cost, args):
         tail = _OUT[head:]
         del _OUT[head:]
         sec_diff(prev, code)
+        sec_reasoning(prev, jr, code)
         _OUT.extend(tail)
-    f = write_snapshot(code, name, cost)
+    f = write_snapshot(code, name, cost, jr)
     if f:
         print(f"\n快照 → {f}")
     say("---")

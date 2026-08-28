@@ -80,11 +80,12 @@ WORKING = [
      "&filter=%28MUTUAL_TYPE%3D%22003%22%29", UA, "手工 / 见 SKILL §6"),
     ("前十大流通股东", "东财 emh5", "https://emh5.eastmoney.com", UA, "preport"),
     # ── 以下 6 条 2026-08-28 实测新增(来自一份外部实现的接口清单,逐条验过)──
-    ("**券商研报全文 PDF**", "东财 reportapi + pdf.dfcfw.com（文本层完好，非扫描件）",
+    ("**券商研报全文 PDF + 产业量价抽句**",
+     "东财 reportapi + pdf.dfcfw.com（文本层完好，非扫描件）",
      "https://reportapi.eastmoney.com/report/list"
      "?industryCode=*&pageSize=5&industry=*&rating=*&ratingChange=*"
      "&beginTime=2026-01-01&endTime=2027-01-01&pageNo=1&qType=0&code=300502",
-     UA, "research"),
+     UA, "research --dig"),
     ("公司公告(含投资者关系记录)", "东财 np-anotice-stock",
      "https://np-anotice-stock.eastmoney.com/api/security/ann"
      "?sr=-1&page_size=5&page_index=1&ann_type=A&client_source=web&stock_list=300502",
@@ -157,16 +158,19 @@ BLOCKED = [
                  "海关总署 stats.customs.gov.cn（**412，WAF 挡爬虫**）· "
                  "国贸通 gtradedata.com（页面可达但**数据在付费报告里**）· "
                  "LightCounting 官网 newsletter 页（抓下来 0 条可用条目）",
-        "alt": "★ **券商研报 PDF 是免费的，里面就有这些数据的定性与方向性描述。**"
-               "2026-08-28 实测:东财 `reportapi` 列出个股研报 → "
-               "`pdf.dfcfw.com/pdf/H3_<infoCode>_1.pdf` 直接下载，"
-               "**文本层完好不是扫描件**。抓到的最新一篇标题就是「1.6T 光模块量价齐升」，"
-               "正文含「1.6T 光模块 Q2 出货量较 Q1 明显增长，预计 Q3/Q4 起放量」这类句子，"
-               "以及产能、份额、毛利率的讨论。"
-               "**拿不到的是精确月度数值，拿得到的是方向和幅度** —— "
-               "而『变化率比水平值重要』本来就是这套方法的核心，方向往往够用。"
+        "alt": "★ **券商研报 PDF 免费可下，而且里面有真数字，不只是定性描述。**"
+               "工具 `research <代码> --dig N`。2026-08-28 实测抽到的:"
+               "销量 1119 万只、**产能扩至 2836 万只/年（同比 +86.58%）**、"
+               "境外均价约 2103 元/只、"
+               "「1.6T 光模块 Q2 出货量较 Q1 明显增长，预计 Q3/Q4 起放量」、"
+               "「产业链原材料整体较为紧张」。"
+               "路径:东财 `reportapi` 列研报 → `pdf.dfcfw.com/pdf/H3_<infoCode>_1.pdf` "
+               "直接下载，**文本层完好不是扫描件**。"
+               "**仍拿不到的**:LightCounting 那种全行业月度出货与现货报价序列 —— "
+               "研报给的是**这一家**的量价，不是全行业的。"
                "此外海关 HS 编码 **85177060（光通信激光收发模块）** 月度出口额公开发布，"
-               "但海关站有 WAF，目前只能靠 WebSearch 读新闻转载的数字。",
+               "但海关站有 WAF，目前只能靠 WebSearch 读新闻转载的数字。"
+               "⚠ 研报是**卖方观点**:拿它的产业事实与评级变动方向，别拿目标价当依据。",
         "url": "https://reportapi.eastmoney.com/report/list"
                "?industryCode=*&pageSize=1&industry=*&rating=*&ratingChange=*"
                "&beginTime=2026-01-01&endTime=2027-01-01&pageNo=1&qType=0&code=300502",
