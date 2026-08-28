@@ -2,7 +2,7 @@
 
 **A 股个股分析工作台 —— 带方法的那种。**
 
-零成本、零 API key，15 个取数与分析工具，外加 **3 个 Agent Skill**：
+零成本、零 API key，16 个取数与分析工具，外加 **3 个 Agent Skill**：
 装上以后，AI 不只是知道**怎么取数**，还知道**该按什么顺序看、哪些指标是领先的、
 结论该怎么下、下完怎么复核**。
 
@@ -30,6 +30,7 @@ preport 300308:1100                      # 九层决策报告
 
 | | 是什么 | 落在哪 |
 |---|---|---|
+| **先判赛道** | 同一套判据套所有赛道会出错。成长股看增速持续性，周期股看周期位置；PEG 在周期股上会给出反向的假信号 | `sectors` |
 | **分清领先与滞后** | 只有少数指标真正领先：北美云厂 Capex（领先业绩 1-2 季）、海外同业股价、云厂下季度指引、券商一致预期的**变动方向** | `capex` · `consensus` · `preport` 第 7 层 |
 | **预期差** | 不预测价格。市值反推市场隐含的预期 → 找市场在担心什么 → 用领先指标去**证否**。已被证否的担忧才是可下注的判断 | `stock-analysis-workflow` §1.5 |
 | **赔率 × 概率** | 三情景算**概率加权期望值**，不是只算赔率。EV ≤ 0 不下注 | 同上 |
@@ -106,6 +107,7 @@ preport 300308:1100 --html r.html # 同上，带版式的 HTML（可打成 PDF�
 capex --guidance                 # ★ 北美云厂 Capex + 他们自己给的下期指引
 consensus 300308                 # ★ 券商一致预期 + 评级变动方向
 research 300308 --dig 3          # ★ 券商研报全文 PDF + 产业量价抽句
+sectors 002353                   # ★ 判赛道:该用哪套领先指标与判据
 baserate calibrate 300308        # 基准率(已自动进 preport 第 8 层)
 journal stats                    # 决策复核与已蒸馏的原则
 probe_sources --only blocked     # 哪些数据拿不到、为什么、替代是什么
@@ -175,10 +177,10 @@ astock-lab/
 ├── install.sh              # 建 venv + 装依赖 + 链 skills + 生成 aliases.sh
 ├── .astock-lab-root        # 根标记，脚本靠它定位工作台（别删）
 ├── skills/                 # ★ 三个 Agent Skill（真身）
-│   ├── stock-analysis-workflow/   分析方法 + 5 个脚本
+│   ├── stock-analysis-workflow/   分析方法 + 6 个脚本
 │   ├── astock-quote/              取数工具 + 8 个脚本
 │   └── finance-pdf-report/        PDF 版式 + 模板 + 3 个脚本
-├── tools/                  # 15 个扁平入口，除 net_probe.sh 外都软链到 skills/*/scripts/
+├── tools/                  # 16 个扁平入口，除 net_probe.sh 外都软链到 skills/*/scripts/
 ├── docs/                   # 环境 / 用法 / 数据全集 / 思维框架对比 / 选型 / 私有副本
 ├── scripts/                # 闸与维护脚本
 ├── private/                # 你自己的东西（持仓、报告、笔记）—— 本仓只有个占位
