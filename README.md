@@ -78,7 +78,12 @@ journal close 1 --outcome partial \
 
 # ④ 看命中率，以及你预估的期望收益和实际差多少
 journal stats
+journal stats --html kb.html   # 给人看的知识库视图
 ```
+
+**一份数据两种呈现**：给 AI 的是 `data/principles.jsonl` 与快照里的 `reasoning` 段
+（结构化，下一轮分析直接读回去）；给人的是那个 HTML 视图 ——
+原则库、待复核、决策时间线、概率校准。
 
 这是 **EvolveR 式的三阶段**（在线交互 → 离线自蒸馏成原则 → 用原则改进决策）。
 关键在第三步：**存下来的必须是抽象原则，不是「这次 300308 怎么样了」**，

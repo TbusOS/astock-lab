@@ -82,6 +82,38 @@ JOURNAL = LAB / "data" / "journal.jsonl"
 PRINCIPLES = LAB / "data" / "principles.jsonl"
 
 
+_OUT = []
+
+
+def say(x=""):
+    print(x)
+    _OUT.append(x)
+
+
+def _load_md2html():
+    """md2html 在 skill finance-pdf-report 里 —— 跨 skill,按候选目录找。
+
+    ⚠ 同 position_report 的 _load_sibling:__file__ 会把软链解成真实路径,
+    sys.path.insert(本目录) 找不到别的 skill 的模块。
+    另外必须接住 SystemExit —— 被 import 的模块缺依赖时会 sys.exit(),
+    那是 BaseException 不是 Exception,`except Exception` 拦不住,
+    会把整个 journal 一起带走。
+    """
+    here = Path(__file__).resolve().parent
+    for d in (here.parent.parent / "finance-pdf-report" / "scripts",
+              LAB / "tools"):
+        if (d / "md2html.py").exists():
+            sys.path.insert(0, str(d))
+            try:
+                import md2html
+                return md2html
+            except SystemExit:
+                continue
+            except Exception:
+                continue
+    return None
+
+
 def _load(p):
     if not p.exists():
         return []
@@ -200,61 +232,178 @@ def cmd_close(a):
 
 
 def cmd_stats(a):
+    """自我进化知识库 —— 终端看文本,--html 出给人看的视图。
+
+    ★ 「一个给 AI 看,一个给人看」:
+      给 AI 的是 `data/principles.jsonl` 与快照里的 reasoning 段(结构化,
+      下一轮分析直接读回去);给人的是这个视图 —— 人要看的是**知识库怎么长出来的**:
+      哪条原则从哪次教训里来、当时的判断是什么、后来对不对、概率估偏了多少。
+      同一份数据两种呈现,不是两份数据。
+    """
     rows = _load(JOURNAL)
+    prin = _load(PRINCIPLES)
     closed = [r for r in rows if r.get("status") == "closed"]
-    print(f"# 决策记录统计\n")
-    print(f"总记录 {len(rows)}　已结 {len(closed)}　"
-          f"未结 {len(rows) - len(closed)}\n")
-    if not closed:
-        print("还没有已复核的记录 —— 至少要 3-5 次复核才能看出系统性偏差。")
-        print("现在能做的:每次给结论时 `journal log` 记一笔，到期回来 `journal close`。")
-        return
+    opens = [r for r in rows if r.get("status") != "closed"]
+    today = dt.date.today()
 
-    for o in ("right", "partial", "wrong"):
-        n = sum(1 for r in closed if r.get("outcome") == o)
-        if len(closed):
-            print(f"  {o:8s} {n:>3} 条　{n/len(closed)*100:5.1f}%")
-    print()
+    say("# 自我进化知识库")
+    say()
+    say(f"> {dt.datetime.now():%Y-%m-%d %H:%M}　·　"
+        f"决策记录 `data/journal.jsonl`　·　原则库 `data/principles.jsonl`")
+    say()
 
-    # 概率校准:声称 bull 概率高的那些,实际涨了吗
+    # ── 概览 ────────────────────────────────────────────────────────
+    say("| 项 | 值 |")
+    say("|---|---|")
+    say(f"| 决策记录 | {len(rows)} 条 |")
+    say(f"| 已复核 | {len(closed)} 条 |")
+    say(f"| 待复核 | {len(opens)} 条 |")
+    say(f"| 已蒸馏原则 | **{len(prin)}** 条 |")
+    if closed:
+        rt = sum(1 for r in closed if r.get("outcome") == "right")
+        say(f"| 命中率 | **{rt/len(closed)*100:.0f}%**（{rt}/{len(closed)} 判对） |")
+    say()
+
+    # ── 原则库:知识库本体 ───────────────────────────────────────────
+    say("## 一　原则库")
+    say()
+    if prin:
+        say("**下次分析前先读一遍。**这是 EvolveR 三阶段里的「策略进化」，"
+            "也是这套方法唯一会自己变好的地方。")
+        say()
+        say("| # | 原则 | 来自 | 蒸馏于 | 用过 | 命中 |")
+        say("|---|---|---|---|---|---|")
+        for i, p in enumerate(prin, 1):
+            used, hit = p.get("used", 0), p.get("hit", 0)
+            rate = f"{hit/used*100:.0f}%" if used else "—"
+            say(f"| {i} | **{p.get('principle', '')}** | "
+                f"#{p.get('from_journal_id')} | "
+                f"{str(p.get('distilled_at', ''))[:10]} | {used} | {hit}（{rate}） |")
+        say()
+    else:
+        say("**还是空的。**原则库要靠复核长出来 —— 每次 `journal close` 时用")
+        say("`--principle \"...\"` 记下抽象教训。")
+        say()
+        say("> 存**「我在有领先指标支撑时倾向低估 bull 概率」**这种，")
+        say("> 不要存「300502 那次判断对了」。前者换只票还能用，后者不能。")
+        say()
+        if opens:
+            nxt = min((r.get("check_date") or "9999") for r in opens)
+            say(f"最近一次能蒸馏的机会:**{nxt}**（{len(opens)} 条待复核里最早的复核日）。")
+            say()
+
+    # ── 待复核 ──────────────────────────────────────────────────────
+    say("## 二　待复核")
+    say()
+    if not opens:
+        say("（没有未结记录）")
+        say()
+    else:
+        say("| # | 代码 | 记于 | 当时价 | 动作 | EV | 复核日 | 还有 |")
+        say("|---|---|---|---|---|---|---|---|")
+        for r in opens:
+            cd = r.get("check_date") or "未定"
+            left = "—"
+            try:
+                y, m, d = (int(x) for x in cd.split("-"))
+                n = (dt.date(y, m, d) - today).days
+                left = f"**{n} 天**" if n >= 0 else f"**已过期 {-n} 天**"
+            except (ValueError, AttributeError):
+                pass
+            ev = r.get("ev")
+            ev_s = "—" if ev is None else f"{ev:+.1f}%"
+            say(f"| {r['id']} | {r['code']} | {str(r.get('logged_at',''))[:10]} | "
+                f"{r.get('price')} | {r.get('action')} | {ev_s} | {cd} | {left} |")
+        say()
+
+    # ── 决策时间线:知识库怎么长出来的 ────────────────────────────────
+    say("## 三　决策时间线")
+    say()
+    if not rows:
+        say("（还没有记录。`journal log <代码> --price ... --action ... "
+            "--falsify \"...\" --check <日期>`）")
+        say()
+    else:
+        for r in sorted(rows, key=lambda x: str(x.get("logged_at", "")), reverse=True):
+            st = r.get("status", "open")
+            oc = r.get("outcome")
+            badge = {"right": "✅ 判对", "partial": "◐ 部分对",
+                     "wrong": "❌ 判错"}.get(oc, "○ 待复核")
+            say(f"### #{r['id']}　{r['code']}　{badge}")
+            say()
+            say(f"{str(r.get('logged_at',''))[:10]} 记录　·　当时价 "
+                f"**{r.get('price')}**　·　动作 **{r.get('action')}**"
+                + (f"　·　成本 {r['cost']}" if r.get("cost") else ""))
+            say()
+            if r.get("thesis"):
+                say(f"- **当时的预期差判断**：{r['thesis']}")
+            if r.get("probs"):
+                p = r["probs"]
+                say(f"- **当时的概率**：bear {p.get('bear')} / base {p.get('base')} "
+                    f"/ bull {p.get('bull')}"
+                    + (f"，EV **{r['ev']:+.1f}%**" if r.get("ev") is not None else ""))
+            if r.get("falsify"):
+                say(f"- **可证伪判据**：{r['falsify']}")
+            if st == "closed":
+                if r.get("actual_return_pct") is not None:
+                    gap = r["actual_return_pct"] - (r.get("ev") or 0)
+                    say(f"- **实际**：{r['actual_return_pct']:+.1f}%"
+                        f"（当时 EV {r.get('ev')}%，偏差 **{gap:+.1f}pp**）")
+                if r.get("review_note"):
+                    say(f"- **复核说明**：{r['review_note']}")
+            say()
+
+    # ── 概率校准 ────────────────────────────────────────────────────
     withret = [r for r in closed if r.get("actual_return_pct") is not None]
-    if withret:
-        print("## 概率校准（EV 预期 vs 实际）\n")
-        print("| # | 代码 | 动作 | 当时 EV | 实际涨跌 | 偏差 |")
-        print("|---|---|---|---|---|---|")
+    say("## 四　概率校准")
+    say()
+    if not withret:
+        say("还没有带实际涨跌的已结记录。**至少要 3-5 次复核才能看出系统性偏差** ——")
+        say("这一节是整套方法里唯一能证明「我到底准不准」的地方，急不来。")
+        say()
+    else:
+        say("| # | 代码 | 动作 | 当时 EV | 实际涨跌 | 偏差 |")
+        say("|---|---|---|---|---|---|")
         gaps = []
         for r in withret:
             gap = r["actual_return_pct"] - (r.get("ev") or 0)
             gaps.append(gap)
-            print(f"| {r['id']} | {r['code']} | {r.get('action')} | "
-                  f"{r.get('ev')}% | {r['actual_return_pct']:+.1f}% | {gap:+.1f}pp |")
+            say(f"| {r['id']} | {r['code']} | {r.get('action')} | "
+                f"{r.get('ev')}% | {r['actual_return_pct']:+.1f}% | {gap:+.1f}pp |")
+        say()
         avg = sum(gaps) / len(gaps)
-        print()
         if avg < -5:
-            print(f"> 🔴 **平均比预期低 {-avg:.1f} 个百分点 —— 你系统性过度乐观。**"
-                  f"下次把 bull 概率调低、bear 调高。")
+            say(f"> 🔴 **平均比预期低 {-avg:.1f} 个百分点 —— 系统性过度乐观。**"
+                f"下次把 bull 概率调低、bear 调高。")
         elif avg > 5:
-            print(f"> 平均比预期高 {avg:.1f} 个百分点 —— 偏保守，"
-                  f"可以适度提高 bull 概率。")
+            say(f"> 平均比预期高 {avg:.1f} 个百分点 —— 偏保守，可以适度提高 bull 概率。")
         else:
-            print(f"> 平均偏差 {avg:+.1f}pp，概率估计基本校准。")
-        print()
+            say(f"> 平均偏差 {avg:+.1f}pp，概率估计基本校准。")
+        say()
 
-    prin = _load(PRINCIPLES)
-    if prin:
-        print(f"## 已蒸馏的原则（{len(prin)} 条）\n")
-        for p in prin:
-            print(f"- {p['principle']}　"
-                  f"（来自 #{p.get('from_journal_id')}，"
-                  f"用过 {p.get('used', 0)} 次，命中 {p.get('hit', 0)}）")
-        print()
-        print("> **下次分析前先读一遍这些原则** —— 这是 EvolveR 三阶段里的"
-              "「策略进化」，也是这套方法唯一会自己变好的地方。")
-    else:
-        print("## 还没有蒸馏出原则\n")
-        print("复核时用 `journal close <id> --principle \"...\"` 记下抽象教训。"
-              "存「我在有领先指标支撑时倾向低估 bull 概率」这种，"
-              "不要存「300502 那次判断对了」。")
+    say("---")
+    say()
+    say("**这份视图是给人看的。**给 AI 看的是同一份数据的结构化形态："
+        "`data/principles.jsonl` 与每份快照里的 `reasoning` 段 —— "
+        "下一轮 `preport` 会把它们读回去，印在第 0 节后面。")
+    say()
+
+    if getattr(a, "md", None):
+        Path(a.md).parent.mkdir(parents=True, exist_ok=True)
+        Path(a.md).write_text("\n".join(_OUT) + "\n", encoding="utf-8")
+        print(f"\n已写入 {a.md}")
+    if getattr(a, "html", None):
+        m = _load_md2html()
+        if m is None:
+            print("\n⚠ 找不到 md2html.py（在 skill finance-pdf-report 里），跳过 HTML",
+                  file=sys.stderr)
+        else:
+            Path(a.html).parent.mkdir(parents=True, exist_ok=True)
+            Path(a.html).write_text(
+                m.render("\n".join(_OUT), title="自我进化知识库",
+                         subtitle=f"生成于 {dt.datetime.now():%Y-%m-%d %H:%M}"),
+                encoding="utf-8")
+            print(f"已写入 {a.html}")
 
 
 def main():
@@ -289,7 +438,10 @@ def main():
                     help="复核时的价格，用来算实际涨跌与 EV 的偏差")
     cl.add_argument("--principle", help="**蒸馏出的抽象原则**（不是「这次对了」）")
 
-    sub.add_parser("stats", help="命中率、概率校准、已蒸馏的原则")
+    st = sub.add_parser("stats", help="自我进化知识库:原则、时间线、概率校准")
+    st.add_argument("--md", metavar="文件", help="存 markdown")
+    st.add_argument("--html", metavar="文件",
+                   help="出给人看的 HTML 视图(浏览器可看,也能打成 PDF)")
 
     a = p.parse_args()
     if not a.cmd:
