@@ -70,7 +70,61 @@ perf_cache/
 EOF
 echo "  ✅ data/.gitignore"
 
-echo "== 3. remote 检查 =="
+echo "== 3. 私有副本的落地页 =="
+# 放在 .github/ 而不是根目录:GitHub 选 README 的顺序是
+# .github/ → 根目录 → docs/,所以这份会盖过根 README.md 显示在仓库首页。
+# **而根 README.md 一个字都不用改** —— 它跟上游逐字节相同,
+# 于是从上游同步时永远不会在 README 上起冲突。
+# 直接改根 README 加个横幅的话,上游每次动 README 开头你都要解一次冲突。
+if [ ! -f .github/README.md ]; then
+  mkdir -p .github
+  _up=$(git remote get-url upstream 2>/dev/null || echo "<公开仓>")
+  cat > .github/README.md <<PRIVEOF
+# 这是 astock-lab 的**私有副本**
+
+> 工具、skills、文档的**真身在上游**：$_up
+> 这里 = 上游全部 + 你自己的数据。
+
+## 先看清楚你在哪个仓
+
+| | 上游（公开） | 这里（私有） |
+|---|---|---|
+| 工具 / skills / 文档 | **真身，在这改** | 从上游同步来的副本 |
+| \`private/\` 持仓、报告、笔记 | 没有 | ✅ 只在这 |
+| \`data/journal.jsonl\` 决策记录 | 没有 | ✅ 只在这 |
+
+**改工具、改 skill、改文档要去上游改**，然后同步下来。
+在这里改的话，下次同步很可能冲突，而且改动传不回去（除非走
+\`docs/08-私有副本.md\` 里的 format-patch 流程）。
+
+## 日常
+
+\`\`\`bash
+bash scripts/sync_from_upstream.sh --check   # 上游有什么更新
+bash scripts/sync_from_upstream.sh           # 合下来
+git push origin main                         # 推到你自己的私有仓
+\`\`\`
+
+## ⚠ 别推错地方
+
+\`origin\` 是你的私有仓，\`upstream\` 是公开仓。
+**永远不要 \`git push upstream\`** —— 那会把你的持仓成本和决策记录推上公开仓，
+而且推上去就撤不回来（GitHub 的事件流、fork、爬虫快照都已经拿到了）。
+
+\`\`\`bash
+git remote -v        # 确认一下再动手
+\`\`\`
+
+## 工具怎么用
+
+看根目录的 \`README.md\` —— 那是上游那份，工具用法完全一样。
+PRIVEOF
+  echo "  ✅ .github/README.md（GitHub 首页会显示它，不是根 README.md）"
+else
+  echo "  已存在 .github/README.md，不覆盖"
+fi
+
+echo "== 4. remote 检查 =="
 o=$(git remote get-url origin 2>/dev/null || echo "")
 u=$(git remote get-url upstream 2>/dev/null || echo "")
 [ -n "$o" ] && echo "  origin  : $o"   || echo "  ⚠ 没有 origin —— 设成你自己的私有仓"
