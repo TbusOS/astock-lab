@@ -23,6 +23,7 @@ echo
 run "1 公开仓零个人信息"  bash "$LAB/scripts/check_public_safe.sh"
 run "2 _lab_root 多份一致" "$PY" "$LAB/scripts/check_lab_root_sync.py"
 run "3 判据线 == 基准率线" "$PY" "$LAB/tools/check_baserate_wiring.py"
+run "3b 先判赛道再跑策略" "$PY" "$LAB/scripts/check_sector_contract.py"
 run "4 软链无断链"        bash -c '
   b=0
   for l in '"$LAB"'/tools/*; do [ -e "$l" ] || { echo "   断链 $l"; b=1; }; done

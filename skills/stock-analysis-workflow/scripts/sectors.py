@@ -42,6 +42,14 @@ SECTORS = {
         "hints": ["CPO", "光通信", "光模块", "印制电路", "覆铜板", "PCB",
                   "服务器", "液冷", "算力", "云计算"],
         "nature": "成长",
+        # 海外对照组。**preport 第 7 层直接读这里** —— 单一真相,
+        # 不在 position_report 里另存一份 PEER_SETS(那样必漂,2026-08-28 已经漂过)。
+        "peer_tickers": [("LITE", "Lumentum"), ("MRVL", "Marvell"),
+                         ("COHR", "Coherent"), ("AVGO", "Broadcom"),
+                         ("NVDA", "NVIDIA")],
+        # 在这个赛道上会给出**假信号**的报告字段。preport 会按这个在正文里打标,
+        # 而不是默默打印一个误导性的数字。key 见 position_report 的 INVALID_MARKS。
+        "invalid_keys": [],
         "leading": [
             ("北美云厂 Capex 同比", "1-2 季", "capex", "✅"),
             ("云厂下季度 Capex 指引", "2-3 季", "capex --guidance（谷歌/Meta 可取）", "⚠ 微软/亚马逊拿不到"),
@@ -56,6 +64,9 @@ SECTORS = {
     "半导体设备": {
         "hints": ["半导体设备", "面板", "显示器件", "锂电专用设备", "专用设备"],
         "nature": "成长（强周期性）",
+        "peer_tickers": [("AMAT", "应用材料"), ("LRCX", "泛林"),
+                         ("KLAC", "科天"), ("ASML", "阿斯麦")],
+        "invalid_keys": ["baserate_growth"],
         "leading": [
             ("下游晶圆厂/面板厂资本开支", "2-4 季", "❌ 无工具（看 SEMI 数据、大厂财报电话会）", "❌"),
             ("在手订单 / 合同负债", "1-3 季", "⚠ 手工看财报「合同负债」科目", "⚠"),
@@ -69,6 +80,9 @@ SECTORS = {
     "油气设服": {
         "hints": ["油气设服", "油服", "油气资源", "页岩气", "海工装备"],
         "nature": "周期",
+        "peer_tickers": [("SLB", "斯伦贝谢"), ("HAL", "哈里伯顿"),
+                         ("BKR", "贝克休斯"), ("FTI", "TechnipFMC")],
+        "invalid_keys": ["peg", "baserate_growth", "pe_percentile"],
         "leading": [
             ("国际油价（Brent/WTI）", "1-2 季", "❌ 无工具", "❌"),
             ("全球油气资本开支", "2-4 季", "❌ 无工具（三桶油+国际油企资本开支计划）", "❌"),
@@ -88,6 +102,8 @@ SECTORS = {
     "消费": {
         "hints": ["白酒", "食品饮料", "调味", "乳制品", "家电", "纺织服装"],
         "nature": "稳健",
+        "peer_tickers": [],
+        "invalid_keys": ["peers"],
         "leading": [
             ("渠道库存与批价", "1-2 季", "❌ 无工具（草根调研/经销商反馈）", "❌"),
             ("预收款 / 合同负债", "1-2 季", "⚠ 手工看财报", "⚠"),
@@ -101,6 +117,8 @@ SECTORS = {
     "医药": {
         "hints": ["化学制药", "生物制品", "医疗器械", "CXO", "中药"],
         "nature": "成长（政策强相关）",
+        "peer_tickers": [],
+        "invalid_keys": ["pe_percentile"],
         "leading": [
             ("集采/医保谈判结果", "1-2 季", "❌ 无工具（政策公告）", "❌"),
             ("临床进度 / 获批", "多季", "⚠ efdata ann 能看到公告", "⚠"),
@@ -114,6 +132,10 @@ SECTORS = {
 
 DEFAULT = {
     "nature": "未知",
+    "hints": [],
+    "peer_tickers": [],
+    # 未定义赛道:**所有依赖赛道假设的指标都不可信**,全部打标。
+    "invalid_keys": ["peg", "baserate_growth", "pe_percentile", "peers"],
     "leading": [("❌ 没有为这个赛道定义领先指标", "—", "—", "❌")],
     "peers": "❌ 未配",
     "invalid": [],
@@ -121,6 +143,42 @@ DEFAULT = {
                 "先问「这条链的需求源头是什么、什么数据领先它 1-2 个季度」，"
                 "然后把答案补进 sectors.py。",
 }
+
+# ── 库接口:给 preport 调 ─────────────────────────────────────────────────────
+# preport 在跑任何一层之前先问这里「这只票是哪个赛道、哪些指标在这里失效」。
+# **不这么做的后果**:2026-08-28 拿油服票跑成长股那套,报告里印出
+# PEG −15.30 而没有任何提示 —— 读者会以为那是个有意义的数。
+
+
+def boards_of(code):
+    """取某只票的板块列表。取不到返回 []。"""
+    try:
+        import efinance as ef
+        return [str(x) for x in ef.stock.get_belong_board(code)["板块名称"]]
+    except Exception:
+        try:
+            import sys as _s
+            _s.path.insert(0, str(Path(__file__).resolve().parent.parent.parent
+                                  / "astock-quote" / "scripts"))
+            import efdata
+            import argparse as _ap
+            df = efdata.ef.stock.get_belong_board(code)
+            return [str(x) for x in df["板块名称"]]
+        except Exception:
+            return []
+
+
+def for_code(code):
+    """一步到位:给代码,返回 (赛道名 or None, spec, 命中板块, 次选列表, 板块原始列表)。
+
+    spec 里 preport 会用到的两个字段:
+      peer_tickers  海外对照组 —— **第 7 层直接用这个**
+      invalid_keys  在这个赛道上会给假信号的报告字段 —— preport 按它打标
+    """
+    boards = boards_of(code)
+    name, spec, matched, others = classify(boards)
+    return name, spec, matched, others, boards
+
 
 _OUT = []
 

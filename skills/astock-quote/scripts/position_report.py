@@ -117,6 +117,7 @@ except Exception:
     _ef = None
 
 br = _load_sibling("baserate", "stock-analysis-workflow")
+sectors = _load_sibling("sectors", "stock-analysis-workflow")
 md2html = _load_sibling("md2html", "finance-pdf-report")
 
 _EF_REPO = _lab_root() / "repos" / "efinance"
@@ -133,31 +134,28 @@ except ImportError:
 import akshare as ak  # noqa: E402
 import pandas as pd  # noqa: E402
 
-# 行业 → 海外可比标的。A 股这些赛道的需求端在海外,只看 A 股会漏信号。
-PEER_SETS = {
-    "光模块": [("LITE", "Lumentum"), ("MRVL", "Marvell"), ("COHR", "Coherent"),
-             ("AVGO", "Broadcom"), ("NVDA", "NVIDIA")],
-    "半导体": [("NVDA", "NVIDIA"), ("AMD", "AMD"), ("INTC", "Intel"),
-             ("TSM", "台积电"), ("AMAT", "应用材料")],
-    "云算力": [("MSFT", "微软"), ("GOOGL", "谷歌"), ("META", "Meta"),
-             ("AMZN", "亚马逊")],
-    # PCB / 覆铜板 —— AI 服务器链的一环,需求端同样在海外云厂
-    "PCB": [("TTMI", "TTM Technologies"), ("JBL", "Jabil"),
-            ("CLS", "Celestica"), ("AVGO", "Broadcom"), ("NVDA", "NVIDIA")],
-    # 油服装备 —— 需求端是全球油气资本开支,跟云厂 Capex 完全无关
-    "油服": [("SLB", "斯伦贝谢"), ("HAL", "哈里伯顿"), ("BKR", "贝克休斯"),
-            ("FTI", "TechnipFMC")],
+# ⚠ **赛道定义不在这里。**曾经这里有一份 PEER_SETS + BOARD_HINTS,
+#   而 sectors.py 里还有一份 SECTORS —— 同一件事(哪些赛道、什么关键词、
+#   对照组是谁)存两处,2026-08-28 已经实测漂了:这边写「光模块/半导体/云算力/
+#   PCB/油服」,那边写「AI算力链/半导体设备/油气设服/消费/医药」,名字和切分全不同。
+#   现在单一真相在 `sectors.py` 的 SECTORS,本文件只读不存。
+
+# 报告字段 → 人话。sectors 的 invalid_keys 用这些 key 指名「哪个指标在这个赛道失效」。
+INVALID_MARKS = {
+    "peg": ("PEG",
+            "周期股的 PEG 在盈利低谷给「便宜」假信号、高峰给「贵」假信号 —— "
+            "分母(增速)在拐点附近本身就没有预测力"),
+    "baserate_growth": ("净利增速基准率",
+                        "基准率库是**全市场口径**,对强周期股不适用 —— "
+                        "周期股的增速分布与成长股完全不同"),
+    "pe_percentile": ("PE 历史分位",
+                      "周期股在 PE 最高时往往是**盈利低谷**(该买)、"
+                      "PE 最低时是盈利高峰(该卖),与成长股相反;"
+                      "政策强相关行业的估值中枢还会被一次性重置"),
+    "peers": ("海外同业对照",
+              "需求端在国内的行业,海外同业没有参考价值"),
 }
-# 板块关键词 → peer set,用 efdata board 的返回自动判
-# ⚠ 顺序有意义:先匹配到的先用。窄的行业词放前面,宽的放后面 ——
-#   胜宏科技同时属于「印制电路板」和「电子」,要匹配到 PCB 不是别的。
-BOARD_HINTS = [
-    ("CPO", "光模块"), ("光通信", "光模块"), ("光模块", "光模块"),
-    ("印制电路", "PCB"), ("覆铜板", "PCB"), ("PCB", "PCB"),
-    ("油气设服", "油服"), ("油服", "油服"), ("油气资源", "油服"),
-    ("半导体", "半导体"), ("芯片", "半导体"),
-    ("云计算", "云算力"), ("算力", "云算力"),
-]
+
 
 _OUT = []
 
@@ -184,6 +182,89 @@ def pct_chg(df, n, col="close"):
     if df is None or len(df) <= n:
         return None
     return (df.iloc[-1][col] / df.iloc[-1 - n][col] - 1) * 100
+
+
+def sec_sector(code):
+    """第 0a 节:先判赛道,再决定下面哪些指标可信。
+
+    ★ 为什么这一节必须在最前面、而且不能跳过:
+      这套方法最早围绕 AI 算力链长出来,领先指标就一个 —— 北美云厂 Capex。
+      拿它跑油服票时**四个地方同时失效**(Capex 无关、PEG 无意义、
+      基准率不适用、只剩滞后指标),而报告一句提示都没有,
+      照样印出 PEG −15.30 —— 读者会以为那是个有意义的数。
+
+      **先判赛道再跑策略**,否则跑的是错的策略,预测结果自然不对。
+
+    返回 (赛道名 or None, invalid_keys, peer_tickers)。
+    """
+    say("## 0a　赛道与适用性")
+    say()
+    if sectors is None:
+        say("（找不到 sectors.py —— 它在 skill `stock-analysis-workflow` 里）")
+        say()
+        say("> ⚠️ **没判赛道就往下跑，下面所有判据都可能用错框架。**")
+        say()
+        return None, [], []
+    try:
+        name, spec, matched, others, boards = sectors.for_code(code)
+    except Exception as e:
+        say(f"（判赛道失败：{type(e).__name__}: {e}）")
+        say()
+        return None, [], []
+
+    inv = spec.get("invalid_keys") or []
+    peers = spec.get("peer_tickers") or []
+
+    if name:
+        say(f"**赛道：{name}**　·　性质 **{spec['nature']}**"
+            + (f"　·　命中板块 {' / '.join(matched[:4])}" if matched else ""))
+    else:
+        say("**赛道：未定义** —— 这只票的板块不在 `sectors.py` 的 SECTORS 表里。")
+    say()
+
+    if others:
+        say("同时命中的其它赛道（分数低于主判）："
+            + "、".join(f"**{n}**（{p} 分）" for n, p, _ in others))
+        say()
+        say("> 多赛道命中时主判只是起点。**如果次选才是它真正的主业，"
+            "换用那一套的领先指标与判据** —— 概念板块会把行业判错。")
+        say()
+
+    if inv:
+        say("### ⚠ 本报告里这些指标在这个赛道**会给假信号**")
+        say()
+        say("| 指标 | 为什么在这里不可信 |")
+        say("|---|---|")
+        for k in inv:
+            label, why = INVALID_MARKS.get(k, (k, "—"))
+            say(f"| **{label}** | {why} |")
+        say()
+        say("> 下面正文里这些指标仍会打印（数字本身是对的），"
+            "但**旁边会标 ⚠️，读的时候要打折**。")
+        say()
+    else:
+        say("本报告的各项指标在这个赛道都适用。")
+        say()
+
+    if not name:
+        say("> 🔴 **未定义赛道 = 这份报告的结论强度大幅下降。**")
+        say("> 下面用的是默认(AI 算力链)那套领先指标与判据，"
+            "而它们对这只票可能完全不适用。")
+        say(">")
+        say("> **要么先回答三个问题并把答案补进 `sectors.py`，要么别用这份报告下结论**：")
+        say("> ① 这条链的**需求源头**是什么（谁掏钱买它的产品）"
+            "② 什么数据**领先那个需求 1-2 个季度**、从哪取"
+            "③ 哪些常用指标在这个赛道会**给出假信号**")
+        say()
+    return name, inv, peers
+
+
+def _mark(inv, key):
+    """给失效指标加行内标记。空串表示这个指标在本赛道有效。"""
+    if key not in inv:
+        return ""
+    label, _ = INVALID_MARKS.get(key, (key, ""))
+    return f"　⚠️ **{label}在本赛道会给假信号，见第 0a 节**"
 
 
 # ── 1 持仓状况 ──────────────────────────────────────────────────────────────
@@ -256,7 +337,7 @@ def sec_fundamental(code):
 
 
 # ── 3 估值 ──────────────────────────────────────────────────────────────────
-def sec_valuation(code, price, fund):
+def sec_valuation(code, price, fund, inv=()):
     say("## 3　估值")
     say()
     pe, cap = hc.fetch_pe_cap(code)
@@ -272,8 +353,9 @@ def sec_valuation(code, price, fund):
                 if key in v:
                     cur, pctl, lo, hi = v[key]
                     tag = "低估" if pctl < 30 else ("偏高" if pctl > 70 else "中性")
+                    mm = _mark(inv, "pe_percentile") if key == "pe" else ""
                     rows.append((f"{label} 历史分位（{v['start'][:4]} 至今）",
-                                 f"**{pctl:.0f}%　{tag}**（区间 {lo:.0f}~{hi:.0f}）"))
+                                 f"**{pctl:.0f}%　{tag}**（区间 {lo:.0f}~{hi:.0f}）{mm}"))
                     snap("valuation", **{f"{key}_pctl": pctl})
     except Exception as e:
         rows.append(("历史分位", f"取数失败 {type(e).__name__}"))
@@ -301,9 +383,17 @@ def sec_valuation(code, price, fund):
                 peg = (capv / (h1 * 2.0)) / fund["net_yoy"]
                 snap("valuation", pe_ttm=float(pe) if pe else None, cap=capv,
                      dyn_pe=capv / (h1 * 2.0), peg=peg)
-                say(f"保守口径 PEG ≈ **{peg:.2f}**"
-                    f"（动态 PE ÷ 净利增速 {fund['net_yoy']:.0f}%）"
-                    f"　—— < 1 通常视为增速能撑住估值。")
+                m = _mark(inv, "peg")
+                if m:
+                    say(f"保守口径 PEG ≈ **{peg:.2f}**"
+                        f"（动态 PE ÷ 净利增速 {fund['net_yoy']:.0f}%）{m}")
+                    say()
+                    say("> 净利增速为负时 PEG 会算出负数，那**不是「便宜」**，"
+                        "是这个指标在这里没有定义。别读它。")
+                else:
+                    say(f"保守口径 PEG ≈ **{peg:.2f}**"
+                        f"（动态 PE ÷ 净利增速 {fund['net_yoy']:.0f}%）"
+                        f"　—— < 1 通常视为增速能撑住估值。")
                 say()
         except Exception:
             pass
@@ -638,24 +728,19 @@ def sec_peers(code, peers, self_df):
     say()
 
 
-def pick_peers(code, explicit):
+def pick_peers(code, explicit, from_sector=None):
+    """对照组来自 **sectors.py 的单一真相**,不在本文件另存一份。
+
+    ⚠ 以前这里有自己的 PEER_SETS + BOARD_HINTS,和 sectors.py 的 SECTORS
+      是两份定义 —— 2026-08-28 实测已经漂了(名字和切分都不同)。
+    """
     if explicit:
         return [(t.strip().upper(), t.strip().upper()) for t in explicit.split(",")]
-    if ef is None:
-        return PEER_SETS["光模块"]
-    try:
-        b = ef.stock.get_belong_board(code)
-        names = "".join(b["板块名称"].astype(str).tolist())
-        for kw, setname in BOARD_HINTS:
-            if kw in names:
-                return PEER_SETS[setname]
-    except Exception:
-        pass
-    return []
+    return list(from_sector or [])
 
 
 # ── 8 基准率校准 ────────────────────────────────────────────────────────────
-def sec_baserate(fund, periods_n):
+def sec_baserate(fund, periods_n, inv=()):
     """外部视角:历史上处在同样位置的公司,四个季度后有多少还保持着。
 
     返回 calibrate() 的结果字典,交给第 9 层把数标进每条判据;失败返回 None。
@@ -665,6 +750,18 @@ def sec_baserate(fund, periods_n):
         return None
     say("## 8　基准率校准（外部视角）")
     say()
+    m = _mark(inv, "baserate_growth")
+    if m:
+        say(f"🔴 **本赛道不适用。**{m}")
+        say()
+        say("基准率库是**全市场口径**——它回答的是「全市场里增速 ≥N% 的公司"
+            "四个季度后还有多少保持着」。周期股的增速分布与成长股完全不同，"
+            "拿全市场基准率去约束周期股的 bull 概率，**约束错了方向**。")
+        say()
+        say("> 这个赛道该用什么替代:见第 0a 节的判据要点，"
+            "或跑 `sectors <代码>` 看完整说明。")
+        say()
+        return None
     if br is None:
         say("（找不到 baserate.py —— 它在 skill `stock-analysis-workflow` 的 "
             "scripts/ 下，或软链在 <仓>/tools/）")
@@ -1035,19 +1132,31 @@ def _days_between(a, b):
 def run_one(code, cost, args):
     prev = load_prev_snapshot(code, time.strftime("%Y-%m-%d"))
     jr = load_open_journal(code)
+    # ★ 赛道判定必须在**取数之前**跑 —— 它决定下面哪些指标可信(inv)、
+    #   第 7 层用谁当对照组(sector_peers)。
+    #   但它的**输出**要排在标题之后、第 1 层之前,所以先缓冲再插回去。
+    _mark0 = len(_OUT)
+    sector, inv, sector_peers = sec_sector(code)
+    sector_lines = _OUT[_mark0:]
+    del _OUT[_mark0:]
+    _SNAP["sector"] = {"name": sector, "invalid_keys": list(inv)}
     name, price = sec_position(code, cost)
+    # 插到「## 1　持仓状况」之前 —— 先判赛道再看数
+    _at = _OUT.index("## 1　持仓状况") if "## 1　持仓状况" in _OUT else len(_OUT)
+    _OUT[_at:_at] = sector_lines
     fund = sec_fundamental(code)
-    sec_valuation(code, price, fund)
+    sec_valuation(code, price, fund, inv)
     sec_chips(code, price)
     sec_risk(code, price)
     tech = sec_technical(code, price, cost)
     if not args.no_peers:
-        sec_peers(code, pick_peers(code, args.peers), tech)
-    bases = None if args.no_baserate else sec_baserate(fund, args.br_periods)
+        sec_peers(code, pick_peers(code, args.peers, sector_peers), tech)
+    bases = None if args.no_baserate else sec_baserate(fund, args.br_periods, inv)
     sec_verdict(fund, cost, price, bases)
     # 对比放在**判据小结之后**产出、但插到报告最前面(第 0 节):
     # 采集要等所有层跑完,而读者要先看到「跟上次比什么变了」。
     if not args.no_diff:
+        # 插在第 1 层之前、但在第 0a 节(赛道)之后 —— 赛道是读一切的前提
         head = _OUT.index("## 1　持仓状况") if "## 1　持仓状况" in _OUT else len(_OUT)
         tail = _OUT[head:]
         del _OUT[head:]
