@@ -111,7 +111,7 @@ cd $LAB/repos/AI_Investment_Manager
 
 调研期间已建独立行情工具(与本选型配套,不依赖任何 LLM):
 
-- 脚本:`$LAB/tools/astock.py`(权威副本在 本仓 skill `astock-quote`)
+- 脚本:`tools/astock.py`（真身在 skill `astock-quote`）
 - 用法:`astock 300308 --l5`(快照+五档)、`--tick`(逐笔)、`--daily`(日线)
 - 关键坑同源:**东财被墙 → 用新浪+腾讯,且只对查行情这一个进程去代理**,不动 shell 全局(Claude Code 仍走代理)。
 

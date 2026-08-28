@@ -34,7 +34,8 @@ scan() {  # scan <名称> <grep 正则> [额外排除正则]
   [ -n "$excl" ] && out=$(printf '%s' "$out" | grep -vE "$excl")
   out=$(printf '%s' "$out" | grep -v '^$')
   if [ -n "$out" ]; then
-    hit "$name" "$(printf '%s' "$out" | wc -l) 处"
+    # ⚠ printf '%s' 不带换行,单行结果 wc -l 会算成 0 —— 用 grep -c 数行
+    hit "$name" "$(printf '%s\n' "$out" | grep -c .) 处"
     printf '%s\n' "$out" | head -5 | sed 's/^/       /'
   else
     ok "$name"
@@ -68,7 +69,14 @@ scan "无个人 venv 命名"    'akshare-venv'
 # 5 真实决策记录(journal 的实际内容不该进公开仓)
 scan "无真实决策记录"      '"stock": *"[0-9]{6}".*"price"|principles\.jsonl.*[0-9]{6}'
 
-# 6 凭证类(不该有,但零成本再查一遍)
+# 6 拆仓遗留:旧仓名与脱敏留下的破句
+#    2026-08-28 实测漏了 9 处 —— 脱敏是正则替换,替换完不看上下文就会留下
+#    「真身在 本仓 两个 skill 里」这种读不通的句子,以及没被规则覆盖的旧仓名。
+# ⚠ 要词边界:公开仓自己就叫 a-stock-lab,裸写 stock-lab 会把 astock-lab/tools 也命中
+scan "无旧仓名残留"        '(^|[^a-z-])stock-lab/(tools|docs|repos)|claude-tools/stock-lab'
+scan "无脱敏破句"          '本仓 [一二三四两0-9]|在 本仓|本仓 仓|本仓-'
+
+# 7 凭证类(不该有,但零成本再查一遍)
 scan "无凭证"              'ghp_[A-Za-z0-9]{20,}|sk-[A-Za-z0-9]{20,}|BEGIN [A-Z ]*PRIVATE KEY|password *= *["'"'"'][^"'"'"']'
 
 echo

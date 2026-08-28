@@ -5,7 +5,7 @@
 //
 // ⚠ 为什么不直接 `import { chromium } from 'playwright'`：
 //   ESM 的 import 按**脚本自身位置**解析 node_modules，不按 cwd。
-//   本脚本住在 本仓 私有仓（没有 node_modules），所以裸 import 必然
+//   本脚本住在仓内的 skills/ 下（那里没有 node_modules），所以裸 import 必然
 //   ERR_MODULE_NOT_FOUND —— 哪怕你 cd 到装了 playwright 的目录也没用。
 //   解法：用 createRequire 从候选目录逐个解析。
 //

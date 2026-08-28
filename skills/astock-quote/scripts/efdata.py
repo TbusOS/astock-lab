@@ -48,14 +48,13 @@ def _lab_root():
             return d
     for d in (Path.home() / "astock-lab-private", Path.home() / "astock-lab",
               Path.home() / "claude-tools" / "astock-lab-private",
-              Path.home() / "claude-tools" / "astock-lab",
-              Path.home() / "claude-tools" / "stock-lab"):
+              Path.home() / "claude-tools" / "astock-lab"):
         if d.is_dir():
             return d
     return Path.cwd()
 
 
-# efinance 优先用已安装版本;没装则回落到 stock-lab/repos 下的 clone
+# efinance 优先用已安装版本;没装则回落到 <仓>/repos 下的 clone
 try:
     import efinance as ef
 except ImportError:

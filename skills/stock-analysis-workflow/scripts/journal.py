@@ -71,8 +71,7 @@ def _lab_root():
             return d
     for d in (Path.home() / "astock-lab-private", Path.home() / "astock-lab",
               Path.home() / "claude-tools" / "astock-lab-private",
-              Path.home() / "claude-tools" / "astock-lab",
-              Path.home() / "claude-tools" / "stock-lab"):
+              Path.home() / "claude-tools" / "astock-lab"):
         if d.is_dir():
             return d
     return Path.cwd()

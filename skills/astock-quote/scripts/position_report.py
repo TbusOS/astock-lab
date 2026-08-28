@@ -63,8 +63,7 @@ def _lab_root():
             return d
     for d in (Path.home() / "astock-lab-private", Path.home() / "astock-lab",
               Path.home() / "claude-tools" / "astock-lab-private",
-              Path.home() / "claude-tools" / "astock-lab",
-              Path.home() / "claude-tools" / "stock-lab"):
+              Path.home() / "claude-tools" / "astock-lab"):
         if d.is_dir():
             return d
     return Path.cwd()
@@ -80,32 +79,31 @@ except ImportError:
 
 
 
-def _load_baserate():
-    """找 baserate.py 并 import。
+def _load_sibling(module, skill):
+    """从**另一个 skill** 里 import 一个模块(baserate / md2html)。
 
-    ⚠ 为什么不能只靠 sys.path.insert(_HERE):baserate 属于**另一个 skill**
-    (stock-analysis-workflow),本脚本属于 astock-quote。两个都被软链进
-    stock-lab/tools/,但 `Path(__file__).resolve()` 会把软链解成**真实路径**,
-    _HERE 因此指向 astock-quote/scripts —— 那里没有 baserate.py。
+    ⚠ 为什么不能只靠 sys.path.insert(_HERE):要找的模块属于别的 skill,
+    本脚本属于 astock-quote。两边都被软链进 <仓>/tools/,但
+    `Path(__file__).resolve()` 会把软链解成**真实路径**,_HERE 因此指向
+    astock-quote/scripts —— 那里没有那个模块。
     所以按候选目录逐个试:先试仓内的兄弟 skill,再试 tools/ 汇集目录。
+
+    ⚠ 必须显式接住 SystemExit:被 import 的模块可能在缺依赖时
+    `sys.exit("需要 xxx…")`,而 SystemExit 继承自 BaseException,
+    **不是 Exception 的子类** —— `except Exception` 接不住它,
+    于是那个模块的退出会**把整个 preport 一起带走**,连 --help 都看不了。
+    preport 对这些可选依赖本来都有降级逻辑,不该因此死掉。
     """
-    cands = [_HERE.parent.parent / "stock-analysis-workflow" / "scripts"]
+    cands = [_HERE.parent.parent / skill / "scripts"]
     lab = os.environ.get("STOCK_LAB")
     if lab:
         cands.append(Path(lab) / "tools")
     cands.append(_lab_root() / "tools")
     for d in cands:
-        if (d / "baserate.py").exists():
+        if (d / f"{module}.py").exists():
             sys.path.insert(0, str(d))
             try:
-                import baserate
-                return baserate
-            # ⚠ 必须显式接住 SystemExit:baserate 在缺 efinance 时是
-            #   `sys.exit("需要 efinance…")`,而 SystemExit 继承自 BaseException,
-            #   **不是 Exception 的子类** —— `except Exception` 接不住它,
-            #   于是 baserate 的退出会**把整个 preport 一起带走**,
-            #   连 `preport --help` 都看不了。而 preport 本来对缺 efinance
-            #   是有降级逻辑的(ef = None,第 8 层跳过),不该因为这个死掉。
+                return __import__(module)
             except SystemExit:
                 continue
             except Exception:
@@ -113,7 +111,8 @@ def _load_baserate():
     return None
 
 
-br = _load_baserate()
+br = _load_sibling("baserate", "stock-analysis-workflow")
+md2html = _load_sibling("md2html", "finance-pdf-report")
 
 _EF_REPO = _lab_root() / "repos" / "efinance"
 try:
@@ -146,6 +145,19 @@ BOARD_HINTS = [
 ]
 
 _OUT = []
+
+# ── 结构化快照 ──────────────────────────────────────────────────────────────
+# 报告的 markdown 是给人读的,**不适合做历史对比**:两份 markdown 做 diff
+# 得到的是排版噪音。真正要比的是「当时看到的数字」与「当时下的判据」。
+# 所以每跑一次同时落一份 JSON:journal 记**决策**,snapshot 记**证据**,
+# --diff 显示**什么变了、判据离触发还有多远**。三者合起来自我进化才闭得上。
+_SNAP = {"facts": {}, "criteria": {}}
+
+
+def snap(section, **kv):
+    """记一层结构化事实。NaN 归一成 None —— 「这次没取到」本身是信息。"""
+    _SNAP["facts"].setdefault(section, {}).update(
+        {k: (None if v is None or v != v else v) for k, v in kv.items()})
 
 
 def say(s=""):
@@ -180,6 +192,8 @@ def sec_position(code, cost):
         if pnl < 0:
             say(f"| 回本需涨 | **{need:+.1f}%** |")
     say()
+    snap("position", price=price, cost=cost,
+         pnl_pct=None if cost is None else (price - cost) / cost * 100)
     return name, price
 
 
@@ -208,6 +222,13 @@ def sec_fundamental(code):
                 say(f"报告期公告日 {str(r['公告日期'])[:10]}")
                 say()
                 got = True
+                snap("fundamental",
+                     rev=float(r["营业收入"]) / 1e8, rev_yoy=float(r["营业收入同比增长"]),
+                     rev_qoq=float(r["营业收入季度环比"]),
+                     net=float(r["净利润"]) / 1e8, net_yoy=float(r["净利润同比增长"]),
+                     net_qoq=float(r["净利润季度环比"]),
+                     gm=float(r["销售毛利率"]), roe=float(r["净资产收益率"]),
+                     eps=float(r["每股收益"]), period=str(r["公告日期"])[:10])
                 return {"net": r["净利润"], "net_yoy": r["净利润同比增长"],
                         "gm": r["销售毛利率"], "eps": r["每股收益"]}
         except Exception as e:
@@ -238,6 +259,7 @@ def sec_valuation(code, price, fund):
                     tag = "低估" if pctl < 30 else ("偏高" if pctl > 70 else "中性")
                     rows.append((f"{label} 历史分位（{v['start'][:4]} 至今）",
                                  f"**{pctl:.0f}%　{tag}**（区间 {lo:.0f}~{hi:.0f}）"))
+                    snap("valuation", **{f"{key}_pctl": pctl})
     except Exception as e:
         rows.append(("历史分位", f"取数失败 {type(e).__name__}"))
     say("| 项 | 值 |")
@@ -262,6 +284,8 @@ def sec_valuation(code, price, fund):
             say()
             if fund.get("net_yoy"):
                 peg = (capv / (h1 * 2.0)) / fund["net_yoy"]
+                snap("valuation", pe_ttm=float(pe) if pe else None, cap=capv,
+                     dyn_pe=capv / (h1 * 2.0), peg=peg)
                 say(f"保守口径 PEG ≈ **{peg:.2f}**"
                     f"（动态 PE ÷ 净利增速 {fund['net_yoy']:.0f}%）"
                     f"　—— < 1 通常视为增速能撑住估值。")
@@ -301,6 +325,9 @@ def sec_chips(code, price):
                 say(f"| 户均持股 | {r['户均持股数量']:,.0f} 股 |")
                 say(f"| 户均市值 | {r['户均持股市值']/1e4:,.1f} 万 |")
                 say()
+                snap("chips", holders=float(r["股东人数"]),
+                     holders_chg_pct=None if pd.isna(pctchg) else float(pctchg),
+                     holders_asof=str(r["股东户数统计截止日"])[:10])
                 if pd.notna(pctchg):
                     if pctchg > 20:
                         say(f"> 🔴 **户数大增 {pctchg:+.0f}%＝筹码分散**。"
@@ -336,6 +363,7 @@ def sec_chips(code, price):
                 say()
                 say("| 项 | 值 |")
                 say("|---|---|")
+                snap("chips", margin_bal=bal / 1e8)
                 say(f"| 融资余额 | {bal/1e8:,.1f} 亿 |")
                 if "融资买入额" in r:
                     say(f"| 当日融资买入 | {float(r['融资买入额'])/1e8:,.1f} 亿 |")
@@ -384,8 +412,13 @@ def sec_risk(code, price):
                 say(f"| {str(x['解禁时间'])[:10]} | {x['限售股类型']} | "
                     f"{float(x['解禁数量'])/1e4:,.0f} 万股 | {float(mv)/1e8:,.1f} 亿 |")
             say()
+            snap("risk", unlock_count=len(r),
+                 unlock_value=float(sum(float(x.get("实际解禁市值",
+                     x.get("解禁市值", 0)) or 0) for _, x in r.iterrows())) / 1e8,
+                 unlock_first=str(r.iloc[0]["解禁时间"])[:10])
             say("> ⚠️ 解禁前后常有抛压，把解禁日标进日历。")
         else:
+            snap("risk", unlock_count=0, unlock_value=0.0, unlock_first=None)
             say("未来约 10 个月**无限售解禁**。")
         say()
     except Exception as e:
@@ -419,6 +452,9 @@ def sec_technical(code, price, cost):
                 say(f"| MA{n} | {v:.1f}　现价在其{rel} |")
         say(f"| 区间最高 | {hi:.2f}（{hi_date}） |")
         say(f"| 距最高回撤 | **{(price/hi-1)*100:.1f}%** |")
+        snap("technical", **{f"ma{n}": (None if pd.isna(last[f"ma{n}"])
+                                        else float(last[f"ma{n}"])) for n in (20, 60, 120)},
+             high=float(hi), drawdown_pct=(price / hi - 1) * 100)
         say()
 
         if cost is not None:
@@ -484,6 +520,7 @@ def sec_peers(code, peers, self_df):
         if good and s22 is not None:
             avg = sum(good) / len(good)
             gap = avg - s22
+            snap("peers", peer_1m_avg=avg, self_1m=s22, gap_pp=gap)
             if gap > 15:
                 say(f"> 🔺 **背离 {gap:.0f} 个百分点**：海外同业近 1 月均值 {avg:+.1f}%，"
                     f"本股 {s22:+.1f}%。需求端没恶化而股价在跌，"
@@ -525,7 +562,7 @@ def sec_baserate(fund, periods_n):
     say()
     if br is None:
         say("（找不到 baserate.py —— 它在 skill `stock-analysis-workflow` 的 "
-            "scripts/ 下，或软链在 stock-lab/tools/）")
+            "scripts/ 下，或软链在 <仓>/tools/）")
         say()
         return None
     say("前面七层全是**这一家**的数据。人只看一家公司时会系统性高估"
@@ -562,6 +599,10 @@ def sec_baserate(fund, periods_n):
             f"**{m['rate']:.0f}%** | {m['n_spans']} 段 | "
             f"{m['lo']:.0f}% ~ {m['hi']:.0f}% |")
     say()
+    snap("baserate", cohort=c.get("growth_cohort"),
+         **{f"hold_{h}": r["rate"] for h, r in c.get("growth", {}).items()},
+         margin_cohort=c.get("margin_cohort"), margin_drop=c.get("margin_drop"),
+         margin_rate=(c.get("margin") or {}).get("rate"))
     say(f"数据源：东财全市场季度业绩，报告期 {c['periods'][0]} ~ {c['periods'][-1]}"
         f"（{len(c['periods'])} 期）。")
     say()
@@ -647,7 +688,152 @@ def sec_verdict(fund, cost, price, bases=None):
         say()
 
 
+# ── 快照落盘与历史对比 ──────────────────────────────────────────────────────
+SNAP_DIR_NAME = "snapshots"
+
+# 要对比的字段:(路径, 显示名, 单位, 变多是好事吗)
+# ⚠ 最后一列不能省 —— 「股东户数 +65%」是坏事,「净利同比 +19pp」是好事,
+#   光看符号会把坏消息标成绿的。
+DIFF_FIELDS = [
+    ("position.price",           "现价",         "",   True),
+    ("fundamental.rev_yoy",      "营收同比",     "%",  True),
+    ("fundamental.net_yoy",      "净利同比",     "%",  True),
+    ("fundamental.net_qoq",      "净利环比",     "%",  True),
+    ("fundamental.gm",           "毛利率",       "%",  True),
+    ("fundamental.roe",          "ROE",          "%",  True),
+    ("valuation.pe_pctl",        "PE 历史分位",  "%",  False),
+    ("valuation.peg",            "PEG",          "",   False),
+    ("chips.holders",            "股东户数",     "户", False),
+    ("chips.margin_bal",         "融资余额",     "亿", None),
+    ("technical.drawdown_pct",   "距高点回撤",   "%",  True),
+    ("peers.gap_pp",             "与海外同业背离", "pp", None),
+    ("baserate.hold_50",         "基准率(保持50%)", "%", True),
+    ("risk.unlock_value",        "未来解禁市值", "亿", False),
+]
+
+
+def _fmt(v, unit):
+    """按单位定精度 —— 「股东户数 155,489.0 户」和「PEG 0.6」都是错的显示。
+    户数是整数;PEG / 价格这类无单位的小数值要两位,一位会把 0.55→0.42
+    显示成「▼0.1」,看不出实际变化。"""
+    if v is None:
+        return "—"
+    if unit == "户":
+        return f"{v:,.0f}户"
+    if unit == "":
+        return f"{v:,.2f}"
+    return f"{v:,.1f}{unit}"
+
+
+def _dig(d, path):
+    cur = d
+    for k in path.split("."):
+        if not isinstance(cur, dict):
+            return None
+        cur = cur.get(k)
+    return cur
+
+
+def snapshot_dir(code):
+    return _lab_root() / "data" / SNAP_DIR_NAME / code
+
+
+def write_snapshot(code, name, cost):
+    """落一份结构化快照。同一天重跑覆盖当天那份。"""
+    import json
+    _SNAP.update({"code": code, "name": name, "cost": cost,
+                  "date": time.strftime("%Y-%m-%d"),
+                  "ts": time.strftime("%Y-%m-%d %H:%M")})
+    d = snapshot_dir(code)
+    try:
+        d.mkdir(parents=True, exist_ok=True)
+        f = d / f"{_SNAP['date']}.json"
+        f.write_text(json.dumps(_SNAP, ensure_ascii=False, indent=2), encoding="utf-8")
+        return f
+    except OSError:
+        return None
+
+
+def load_prev_snapshot(code, today):
+    """取**今天之前**最近的一份。同一天重跑不该跟自己比。"""
+    import json
+    d = snapshot_dir(code)
+    if not d.is_dir():
+        return None
+    fs = sorted(f for f in d.glob("*.json") if f.stem < today)
+    if not fs:
+        return None
+    try:
+        return json.loads(fs[-1].read_text(encoding="utf-8"))
+    except (OSError, ValueError):
+        return None
+
+
+def sec_diff(prev, code):
+    """跟上一份快照逐项对比。这是自我进化真正缺的那一环。"""
+    if not prev:
+        say("## 0　与上次对比")
+        say()
+        say(f"（`data/{SNAP_DIR_NAME}/{code}/` 下还没有更早的快照 —— "
+            f"这是第一次跑，下次再来就有对比了）")
+        say()
+        return
+    say("## 0　与上次对比")
+    say()
+    say(f"上一份快照：**{prev.get('date')}**（{prev.get('ts', '')}）　·　"
+        f"相隔 {_days_between(prev.get('date'), time.strftime('%Y-%m-%d'))} 天")
+    say()
+    say("| 指标 | 上次 | 这次 | 变化 |")
+    say("|---|---|---|---|")
+    moved = []
+    for path, label, unit, higher_good in DIFF_FIELDS:
+        a, b = _dig(prev.get("facts", {}), path), _dig(_SNAP["facts"], path)
+        if a is None and b is None:
+            continue
+        fa, fb = _fmt(a, unit), _fmt(b, unit)
+        if a is None or b is None:
+            say(f"| {label} | {fa} | {fb} | — |")
+            continue
+        d = b - a
+        if abs(d) < 1e-9:
+            say(f"| {label} | {fa} | {fb} | 持平 |")
+            continue
+        arrow = "▲" if d > 0 else "▼"
+        # unit 是 % 或 pp 时,差值本身就是百分点,不要再写成「%」
+        du = "pp" if unit in ("%", "pp") else unit
+        say(f"| {label} | {fa} | {fb} | **{arrow} {_fmt(abs(d), du)}** |")
+        if higher_good is not None:
+            moved.append((label, d, higher_good, du))
+    say()
+    good = [m for m in moved if (m[1] > 0) == m[2]]
+    bad = [m for m in moved if (m[1] > 0) != m[2]]
+    def _brief(items):
+        return "、".join(f"{l} {'+' if d > 0 else '−'}{_fmt(abs(d), u)}"
+                        for l, d, _, u in items[:5])
+    if bad:
+        say(f"> 🔴 **变差 {len(bad)} 项**：{_brief(bad)}")
+        say()
+    if good:
+        say(f"> ✅ 变好 {len(good)} 项：{_brief(good)}")
+        say()
+    say("> **怎么用这一节**：不是看涨跌，是看**你上次的判据现在离触发有多远**。"
+        "第 9 层每条判据后面都有阈值，拿这里的「这次」去对。"
+        "判据接近触发而你没动作，那就是该记进 `journal` 的东西。")
+    say()
+
+
+def _days_between(a, b):
+    from datetime import date
+    try:
+        ya, ma, da = (int(x) for x in a.split("-"))
+        yb, mb, db = (int(x) for x in b.split("-"))
+        return (date(yb, mb, db) - date(ya, ma, da)).days
+    except (ValueError, AttributeError):
+        return "?"
+
+
 def run_one(code, cost, args):
+    prev = load_prev_snapshot(code, time.strftime("%Y-%m-%d"))
     name, price = sec_position(code, cost)
     fund = sec_fundamental(code)
     sec_valuation(code, price, fund)
@@ -658,6 +844,17 @@ def run_one(code, cost, args):
         sec_peers(code, pick_peers(code, args.peers), tech)
     bases = None if args.no_baserate else sec_baserate(fund, args.br_periods)
     sec_verdict(fund, cost, price, bases)
+    # 对比放在**判据小结之后**产出、但插到报告最前面(第 0 节):
+    # 采集要等所有层跑完,而读者要先看到「跟上次比什么变了」。
+    if not args.no_diff:
+        head = _OUT.index("## 1　持仓状况") if "## 1　持仓状况" in _OUT else len(_OUT)
+        tail = _OUT[head:]
+        del _OUT[head:]
+        sec_diff(prev, code)
+        _OUT.extend(tail)
+    f = write_snapshot(code, name, cost)
+    if f:
+        print(f"\n快照 → {f}")
     say("---")
     say()
     say("**数据来源**：行情=新浪　·　估值分位=baostock　·　"
@@ -681,6 +878,10 @@ def main():
                    help="跳过第 8 层基准率(热缓存约 2 秒,冷缓存约 30 秒)")
     p.add_argument("--br-periods", type=int, default=12, metavar="N",
                    help="基准率回看几个报告期(默认 12≈3 年)")
+    p.add_argument("--html", metavar="文件",
+                   help="同时出一份带版式的 HTML(浏览器可看,也能打印成 PDF)")
+    p.add_argument("--no-diff", action="store_true",
+                   help="跳过第 0 节「与上次对比」")
     a = p.parse_args()
 
     if not a.holdings:
@@ -703,6 +904,20 @@ def main():
         Path(a.md).parent.mkdir(parents=True, exist_ok=True)
         Path(a.md).write_text("\n".join(_OUT) + "\n", encoding="utf-8")
         print(f"\n已写入 {a.md}")
+    if a.html:
+        if md2html is None:
+            print("\n⚠ 找不到 md2html.py(在 skill finance-pdf-report 里)，跳过 HTML",
+                  file=sys.stderr)
+        else:
+            md = "\n".join(_OUT)
+            title = next((l.lstrip("# ").strip() for l in _OUT if l.startswith("# ")),
+                         "持仓决策报告")
+            Path(a.html).parent.mkdir(parents=True, exist_ok=True)
+            Path(a.html).write_text(
+                md2html.render(md, title=title,
+                               subtitle=f"生成于 {time.strftime('%Y-%m-%d %H:%M')}"),
+                encoding="utf-8")
+            print(f"已写入 {a.html}")
     return 0
 
 

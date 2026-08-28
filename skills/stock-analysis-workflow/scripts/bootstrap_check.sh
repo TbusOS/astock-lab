@@ -19,8 +19,7 @@ _find_lab() {
     d=$(dirname "$d")
   done
   for c in "$HOME/astock-lab-private" "$HOME/astock-lab" \
-           "$HOME/claude-tools/astock-lab-private" "$HOME/claude-tools/astock-lab" \
-           "$HOME/claude-tools/stock-lab"; do
+           "$HOME/claude-tools/astock-lab-private" "$HOME/claude-tools/astock-lab"; do
     [ -d "$c" ] && { printf '%s' "$c"; return; }
   done
   pwd
@@ -49,7 +48,7 @@ for t in astock.py efdata.py holdings_check.py position_report.py capex.py \
 done
 
 # baserate 属于**另一个 skill**,preport 第 8 层靠 _load_baserate() 按候选路径找它。
-# 软链在不代表 import 得到(比如 本仓 仓没 clone 全),所以真 import 一次。
+# 软链在不代表 import 得到(比如仓没 clone 全),所以真 import 一次。
 if [ -x "$PY" ]; then
   if $PY -c "
 import sys; sys.path.insert(0, '$LAB/tools')
@@ -81,7 +80,7 @@ if [ -x "$PY" ]; then
   if $PY -c "import edgar" 2>/dev/null; then ok "  edgartools(import edgar)"
   else soft "  缺 edgartools —— 只影响 capex --engine both 的交叉验证,不影响主流程"
        echo "        修复:$VENV/bin/pip install edgartools"; fi
-  # ⚠ efinance 通常**不是 pip 装的**,是从 stock-lab/repos/efinance clone 加载的
+  # ⚠ efinance 通常**不是 pip 装的**,是从 <仓>/repos/efinance clone 加载的
   if $PY -c "import efinance" 2>/dev/null; then ok "  efinance(pip 装)"
   elif [ -d "$LAB/repos/efinance/efinance" ]; then
        if $PY -c "import sys;sys.path.insert(0,'$LAB/repos/efinance');import efinance" 2>/dev/null; then

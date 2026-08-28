@@ -2,7 +2,7 @@
 
 **A 股个股分析工作台 —— 带方法的那种。**
 
-零成本、零 API key，13 个取数与分析工具，外加 **3 个 Agent Skill**：
+零成本、零 API key，14 个取数与分析工具，外加 **3 个 Agent Skill**：
 装上以后，AI 不只是知道**怎么取数**，还知道**该按什么顺序看、哪些指标是领先的、
 结论该怎么下、下完怎么复核**。
 
@@ -96,6 +96,7 @@ astock 300308 --l5 --tick        # 行情 / 五档 / 逐笔 / 日线
 efdata --list                    # 东财报表数据 18 个子命令
 hcheck 300308:1100               # 持仓体检 + PE/PB 历史分位
 preport 300308:1100 --md r.md    # ★ 九层决策报告 → markdown
+preport 300308:1100 --html r.html # 同上，带版式的 HTML（可打成 PDF）
 capex --guidance                 # ★ 北美云厂 Capex + 他们自己给的下期指引
 consensus 300308                 # ★ 券商一致预期 + 评级变动方向
 baserate calibrate 300308        # 基准率(已自动进 preport 第 8 层)
@@ -109,7 +110,16 @@ probe_sources --only blocked     # 哪些数据拿不到、为什么、替代是
 1 持仓状况   2 基本面   3 估值   4 筹码杠杆   5 解禁风险
 6 技术位     7 海外同业(需求端在海外，只看 A 股会漏背离)
 8 基准率(外部视角)     9 判据小结(每条判据自带历史基准率)
+
+0 与上次对比 —— 有历史快照时自动插到最前面
 ```
+
+每跑一次自动落一份**结构化快照** `data/snapshots/<代码>/<日期>.json`，
+下次再跑第 0 节就出「这次 vs 上次」：净利同比 110% → 91%（▼19pp）、
+毛利率离判据线还有多远、股东户数增减多少。
+
+**HTML 给人看，JSON 给机器 diff** —— 两份 HTML 做对比只会得到排版噪音。
+这是自我进化的证据层：`journal` 记**决策**，快照记**证据**，第 0 节显示**变化**。
 
 第 9 层长这样 —— **判据不再是光秃秃的阈值**：
 
@@ -160,8 +170,8 @@ astock-lab/
 ├── skills/                 # ★ 三个 Agent Skill（真身）
 │   ├── stock-analysis-workflow/   分析方法 + 5 个脚本
 │   ├── astock-quote/              取数工具 + 7 个脚本
-│   └── finance-pdf-report/        PDF 版式 + 2 个脚本
-├── tools/                  # 13 个扁平入口，除 net_probe.sh 外都软链到 skills/*/scripts/
+│   └── finance-pdf-report/        PDF 版式 + 模板 + 3 个脚本
+├── tools/                  # 14 个扁平入口，除 net_probe.sh 外都软链到 skills/*/scripts/
 ├── docs/                   # 环境 / 用法 / 数据全集 / 思维框架对比 / 选型 / 私有副本
 ├── scripts/                # 闸与维护脚本
 ├── private/                # 你自己的东西（持仓、报告、笔记）—— 本仓只有个占位
