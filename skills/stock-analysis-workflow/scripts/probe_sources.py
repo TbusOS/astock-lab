@@ -79,6 +79,28 @@ WORKING = [
      "?reportName=RPT_MUTUAL_TOP10DEAL&pageSize=1&columns=ALL"
      "&filter=%28MUTUAL_TYPE%3D%22003%22%29", UA, "手工 / 见 SKILL §6"),
     ("前十大流通股东", "东财 emh5", "https://emh5.eastmoney.com", UA, "preport"),
+    # ── 以下 6 条 2026-08-28 实测新增(来自一份外部实现的接口清单,逐条验过)──
+    ("**券商研报全文 PDF**", "东财 reportapi + pdf.dfcfw.com（文本层完好，非扫描件）",
+     "https://reportapi.eastmoney.com/report/list"
+     "?industryCode=*&pageSize=5&industry=*&rating=*&ratingChange=*"
+     "&beginTime=2026-01-01&endTime=2027-01-01&pageNo=1&qType=0&code=300502",
+     UA, "research"),
+    ("公司公告(含投资者关系记录)", "东财 np-anotice-stock",
+     "https://np-anotice-stock.eastmoney.com/api/security/ann"
+     "?sr=-1&page_size=5&page_index=1&ann_type=A&client_source=web&stock_list=300502",
+     UA, "efdata ann"),
+    ("香港中央结算多期持股序列", "东财 RPT_F10_EH_HOLDERS（比十大股东单期长得多）",
+     "https://datacenter.eastmoney.com/securities/api/data/v1/get"
+     "?reportName=RPT_F10_EH_HOLDERS&pageSize=1&columns=ALL", UA, "hksc"),
+    ("北向个股持仓·季度", "东财 RPT_MUTUAL_HOLDSTOCKNORTH_STA",
+     "https://datacenter-web.eastmoney.com/api/data/v1/get"
+     "?reportName=RPT_MUTUAL_HOLDSTOCKNORTH_STA&pageSize=1&columns=ALL", UA, "hksc"),
+    ("北向个股持仓·日度(停更前)", "东财 RPT_MUTUAL_HOLDSTOCKNDATE_STA",
+     "https://datacenter-web.eastmoney.com/api/data/v1/get"
+     "?reportName=RPT_MUTUAL_HOLDSTOCKNDATE_STA&pageSize=1&columns=ALL", UA, "hksc"),
+    ("F10 流通股东(带流通口径比例)", "东财 emweb PC_HSF10",
+     "https://emweb.securities.eastmoney.com/PC_HSF10/ShareholderResearch/PageAjax"
+     "?code=SZ300502", UA, "hksc"),
     ("基金净值 / 持仓", "东财 fundmobapi",
      "https://fundmobapi.eastmoney.com", UA, "efdata fund*"),
     ("北美云厂 Capex（领先指标）", "SEC EDGAR XBRL（UA 必须带联系方式）",
@@ -118,24 +140,36 @@ BLOCKED = [
                "电话会纪要不属于 SEC 披露文件。",
         "tried": "SEC 8-K 的 EX-99.1 全文正则扫（谷歌、Meta 命中，这两家零命中）",
         "alt": "谷歌、Meta 的指引拿得到（`capex --guidance`）。"
-               "微软/亚马逊要靠 transcript：Motley Fool / Seeking Alpha 页面可达但"
-               "是 JS 渲染的 Next.js payload，需要浏览器渲染才能取；"
-               "EarningsCall / Alpha Vantage 有 API 但要 key。",
+               "微软/亚马逊要靠 transcript，而 transcript 源本机都不通:"
+               "**roic.ai 403 · Motley Fool 404**（2026-08-28 实测，"
+               "一份外部实现走的就是这两条路，它自己产出的 best_guidance "
+               "五家全是空的）;Seeking Alpha 是 JS 渲染的 Next.js payload;"
+               "EarningsCall / Alpha Vantage 有 API 但要 key。"
+               "**这一条目前没有免费自动化路径，只能 WebSearch 读转述。**",
         "url": "https://www.fool.com/earnings-call-transcripts/",
         "ua": UA,
     },
     {
-        "what": "**产业高频数据**（1.6T 月度出货量 / 800G 报价 / 光芯片供需）",
-        "why": "不在任何免费公开源。券商产业链调研报告与 LightCounting 等"
-               "第三方咨询机构的付费数据库才有。",
+        "what": "**产业高频数据的精确值**（1.6T 月度出货量 / 800G 现货报价 / 光芯片供需）",
+        "why": "**精确的月度数字**确实只有 LightCounting 等第三方咨询机构的付费库有。"
+               "但下面那条『替代』2026-08-28 被推翻了一半 —— 见下。",
         "tried": "akshare（只有宏观进出口总额，无 HS 编码细分）· "
                  "海关总署 stats.customs.gov.cn（**412，WAF 挡爬虫**）· "
-                 "国贸通 gtradedata.com（页面可达但**数据在付费报告里**）",
-        "alt": "**海关月度出口是个可行方向但目前取不到**：HS 编码 "
-               "**85177060 = 光通信设备的激光收发模块**，月度出口额公开发布，"
-               "财经媒体会转载具体数字。可靠的自动化路径需要突破海关网站的 WAF，"
-               "或找已经整理好的第三方免费源。**目前只能靠 WebSearch 读新闻里的数字。**",
-        "url": "http://stats.customs.gov.cn/",
+                 "国贸通 gtradedata.com（页面可达但**数据在付费报告里**）· "
+                 "LightCounting 官网 newsletter 页（抓下来 0 条可用条目）",
+        "alt": "★ **券商研报 PDF 是免费的，里面就有这些数据的定性与方向性描述。**"
+               "2026-08-28 实测:东财 `reportapi` 列出个股研报 → "
+               "`pdf.dfcfw.com/pdf/H3_<infoCode>_1.pdf` 直接下载，"
+               "**文本层完好不是扫描件**。抓到的最新一篇标题就是「1.6T 光模块量价齐升」，"
+               "正文含「1.6T 光模块 Q2 出货量较 Q1 明显增长，预计 Q3/Q4 起放量」这类句子，"
+               "以及产能、份额、毛利率的讨论。"
+               "**拿不到的是精确月度数值，拿得到的是方向和幅度** —— "
+               "而『变化率比水平值重要』本来就是这套方法的核心，方向往往够用。"
+               "此外海关 HS 编码 **85177060（光通信激光收发模块）** 月度出口额公开发布，"
+               "但海关站有 WAF，目前只能靠 WebSearch 读新闻转载的数字。",
+        "url": "https://reportapi.eastmoney.com/report/list"
+               "?industryCode=*&pageSize=1&industry=*&rating=*&ratingChange=*"
+               "&beginTime=2026-01-01&endTime=2027-01-01&pageNo=1&qType=0&code=300502",
         "ua": UA,
     },
 ]
