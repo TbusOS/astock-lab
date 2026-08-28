@@ -1,0 +1,1 @@
+../skills/stock-analysis-workflow/scripts/check_baserate_wiring.py

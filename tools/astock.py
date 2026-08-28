@@ -1,0 +1,1 @@
+../skills/astock-quote/scripts/astock.py

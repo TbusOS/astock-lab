@@ -1,0 +1,1 @@
+../skills/stock-analysis-workflow/scripts/baserate.py
