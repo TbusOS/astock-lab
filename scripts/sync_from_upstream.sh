@@ -29,12 +29,18 @@ git remote get-url upstream >/dev/null 2>&1 || {
   echo "   加上:git remote add upstream https://github.com/TbusOS/astock-lab.git"
   exit 2; }
 
-# 有未提交改动就先停 —— merge 撞上脏工作区是最难收拾的情况
-if [ -n "$(git status --porcelain)" ]; then
-  echo "❌ 工作区有未提交改动,先 commit 或 stash 再同步:"
-  git status -s | sed 's/^/     /'
+# 只拦**已跟踪文件的未提交改动** —— merge 撞上这些是最难收拾的情况。
+# 未跟踪文件(?? 开头)不拦:私有副本几乎总有新报告、新数据、新笔记,
+# 那些不参与 merge。真撞上同名文件时 git 自己会报
+# "untracked working tree file would be overwritten",信息比这里拦得更准。
+dirty=$(git status --porcelain | grep -v '^??' || true)
+if [ -n "$dirty" ]; then
+  echo "❌ 已跟踪文件有未提交改动,先 commit 或 stash 再同步:"
+  printf '%s\n' "$dirty" | sed 's/^/     /'
   exit 1
 fi
+untracked=$(git status --porcelain | grep -c '^??' || true)
+[ "$untracked" -gt 0 ] && echo "（有 $untracked 个未跟踪文件，不影响同步）"
 
 echo "拉取 upstream…"
 git fetch -q upstream
