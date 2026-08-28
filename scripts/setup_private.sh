@@ -43,7 +43,14 @@ EOF
 fi
 echo "  ✅ private/{portfolio,reports,sessions,notes}"
 
-echo "== 2. 让 data/ 可被 track =="
+echo "== 2. 让 private/ 与 data/ 可被 track =="
+cat > private/.gitignore <<'EOF'
+# 这个文件只存在于私有副本。
+# 公开仓的 .gitignore 写的是 `private/*`（只排除内容，不排除目录本身），
+# 所以这里可以把内容反选回来。从公开仓同步时不会冲突：公开仓没有这个文件。
+!*
+EOF
+echo "  ✅ private/.gitignore"
 cat > data/.gitignore <<'EOF'
 # 这个文件只存在于私有副本。
 # 公开仓的 .gitignore 写的是 `data/*`（只排除内容，不排除目录本身），
