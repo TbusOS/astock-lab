@@ -149,6 +149,28 @@ def cmd_log(a):
     if tot and abs(tot - 1.0) > 0.02:
         print(f"⚠ 三情景概率之和 = {tot:.2f}，不是 1.00 —— 确认是不是写错了",
               file=sys.stderr)
+
+    # 三情景的**价位**。为什么必须单独存而不能留在 thesis 散文里
+    # （2026-08-28 做深度报告时才发现的坑）:
+    #   赔率图、下行空间、「跌到多少才是加仓区」全都要拿这三个数去算。
+    #   埋在 thesis 里就只能靠正则抠 —— 换个人写法不同就抠不出来，
+    #   而抠不出来时图会**静默少画一张**，报告看着还是完整的。
+    #   结构化字段抠不到就是 None，缺了会明说。
+    px = {"bear": a.bear_px, "base": a.base_px, "bull": a.bull_px}
+    if any(v is not None for v in px.values()) and a.price:
+        for k in ("bear", "base", "bull"):
+            if px[k] is not None:
+                px[f"{k}_chg"] = round((px[k] / a.price - 1) * 100, 1)
+    # EV 自洽性检查:三情景价位齐全时，用价位 × 概率重算一遍 EV 与你写的对不上就报。
+    # 不是拦截（你可能有别的算法），是让口径不一致当场暴露而不是留到复核时。
+    if a.ev is not None and a.price and all(px.get(k) is not None
+                                            for k in ("bear", "base", "bull")) \
+            and all(probs.get(k) is not None for k in ("bear", "base", "bull")):
+        calc = sum(probs[k] * (px[k] / a.price - 1) * 100
+                   for k in ("bear", "base", "bull"))
+        if abs(calc - a.ev) > 2.0:
+            print(f"⚠ EV 对不上:你写 {a.ev:+.1f}%，按三情景价位×概率算是 "
+                  f"{calc:+.1f}%（差 {abs(calc - a.ev):.1f}pp）", file=sys.stderr)
     rec = {
         "id": rid,
         "logged_at": dt.datetime.now().isoformat(timespec="seconds"),
@@ -158,6 +180,7 @@ def cmd_log(a):
         "action": a.action,
         "ev": a.ev,
         "probs": probs,
+        "scenario_px": px,           # 三情景**价位**（画赔率图、算下行空间靠它）
         "thesis": a.thesis,          # 当时的预期差判断
         "falsify": a.falsify,        # 可证伪判据 —— 复核时就核这条
         "check_date": a.check,       # 什么时候回来核
@@ -422,6 +445,10 @@ def main():
     lg.add_argument("--bear", type=float, help="熊市情景概率 如 0.25")
     lg.add_argument("--base", type=float, help="中性情景概率")
     lg.add_argument("--bull", type=float, help="牛市情景概率")
+    lg.add_argument("--bear-px", type=float, dest="bear_px",
+                    help="熊市情景**价位**（元）—— 深度报告画赔率图靠它")
+    lg.add_argument("--base-px", type=float, dest="base_px", help="中性情景价位")
+    lg.add_argument("--bull-px", type=float, dest="bull_px", help="牛市情景价位")
     lg.add_argument("--thesis", help="当时的预期差判断（市场错在哪、我凭什么这么认为）")
     lg.add_argument("--falsify", help="**可证伪判据** —— 什么情况下这个判断算错")
     lg.add_argument("--check", help="复核日期 YYYY-MM-DD，通常是下个季报")

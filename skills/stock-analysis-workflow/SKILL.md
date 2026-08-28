@@ -464,6 +464,7 @@ journal stats --html kb.html       # 出给人看的视图
 | **`consensus`** | **券商一致预期 + 评级变动(领先指标)** | `consensus 300502 --days 30` |
 | **`journal`** | **决策记录与复核(自我进化)** | `journal log ...` / `review` / `close` / `stats` |
 | **`baserate`** | **基准率:外部视角压住过度乐观** | `baserate calibrate 300502` |
+| **`dreport`** | **给人看的深度报告(结论层,不联网)** | `dreport 300502 --tolerance 30 --out r.html` |
 | **`sectors`** | **赛道分派:该用哪套领先指标与判据** | `sectors 002353` |
 | **`research`** | **券商研报全文 + 产业量价抽句** | `research 300502 --dig 3` |
 | `probe_sources` | 数据源可达性(含拿不到的及原因) | `probe_sources --only blocked` |
@@ -478,7 +479,9 @@ capex --guidance --md capex.md               # ① 需求源头 + 下期指引(�
 consensus 300502 --md cons.md                # ①b 一致预期与评级变动
 preport 300502:400.00 --md pos.md           # ②③④⑤ 一次跑完(第 8 层自带基准率)
 # 消息面靠 WebSearch 补:订单/砍单/产业进展
-journal log 300502 --price ... --action ... --falsify "..."   # ⑦ 记一笔
+journal log 300502 --price ... --action ... --falsify "..." \
+        --bear-px ... --base-px ... --bull-px ...              # ⑦ 记一笔（含情景价位）
+dreport 300502 --tolerance 30 --out 报告.html                  # ⑧ 出给人看的那份
 ```
 
 ---
@@ -516,6 +519,23 @@ journal log 300502 --price ... --action ... --falsify "..."   # ⑦ 记一笔
 ## 5　报告结构(结论前置)
 
 **人们最想知道的是「接下来怎么做」,不是「数据是什么」。**
+
+### ⚠ 先分清:`preport` 出的不是给人看的那份
+
+`preport --html` 是**数据层** —— 0a~9 十节表格,每个数有出处,但它**不替你下判断**。
+给人看的深度报告是 `dreport`(skill `finance-pdf-report`),它读**快照 + journal**,
+渲染成结论前置 / 正反证据 / 价格坐标图 / 三情景赔率图。
+
+    preport 300308:1100.00        # 数据层,顺便落快照
+    journal log 300308 ... --bear-px 700 --base-px 950 --bull-px 1200
+    dreport 300308 --tolerance 30 --out r.html    # 给人看的那份
+
+**三情景的价位必须用 `--bear-px/--base-px/--bull-px` 记进 journal**,
+不能只写在 thesis 散文里 —— 赔率图、下行空间、「跌到多少才是加仓区」全靠这三个数,
+埋在散文里就只能靠正则抠,抠不到时图会**静默少画一张**,而报告看着仍然完整。
+`journal log` 会拿三情景价位 × 概率重算一遍 EV,与你写的差 >2pp 就报。
+
+
 
 ```
 封面     现价 / 成本 / 浮亏 / 回本需涨   四个 KPI

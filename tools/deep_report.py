@@ -1,0 +1,1 @@
+../skills/finance-pdf-report/scripts/deep_report.py
