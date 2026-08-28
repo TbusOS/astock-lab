@@ -141,10 +141,20 @@ PEER_SETS = {
              ("TSM", "台积电"), ("AMAT", "应用材料")],
     "云算力": [("MSFT", "微软"), ("GOOGL", "谷歌"), ("META", "Meta"),
              ("AMZN", "亚马逊")],
+    # PCB / 覆铜板 —— AI 服务器链的一环,需求端同样在海外云厂
+    "PCB": [("TTMI", "TTM Technologies"), ("JBL", "Jabil"),
+            ("CLS", "Celestica"), ("AVGO", "Broadcom"), ("NVDA", "NVIDIA")],
+    # 油服装备 —— 需求端是全球油气资本开支,跟云厂 Capex 完全无关
+    "油服": [("SLB", "斯伦贝谢"), ("HAL", "哈里伯顿"), ("BKR", "贝克休斯"),
+            ("FTI", "TechnipFMC")],
 }
 # 板块关键词 → peer set,用 efdata board 的返回自动判
+# ⚠ 顺序有意义:先匹配到的先用。窄的行业词放前面,宽的放后面 ——
+#   胜宏科技同时属于「印制电路板」和「电子」,要匹配到 PCB 不是别的。
 BOARD_HINTS = [
     ("CPO", "光模块"), ("光通信", "光模块"), ("光模块", "光模块"),
+    ("印制电路", "PCB"), ("覆铜板", "PCB"), ("PCB", "PCB"),
+    ("油气设服", "油服"), ("油服", "油服"), ("油气资源", "油服"),
     ("半导体", "半导体"), ("芯片", "半导体"),
     ("云计算", "云算力"), ("算力", "云算力"),
 ]
@@ -432,7 +442,7 @@ def sec_chips(code, price):
                         say()
                 hit = True
         except Exception as e:
-            say(f"（港资持股取数失败：{type(e).__name__}）")
+            say(f"（港资持股取数失败：{type(e).__name__}: {e}）")
             say()
 
     # ── 北向个股持仓 ────────────────────────────────────────────────
@@ -455,7 +465,7 @@ def sec_chips(code, price):
                 say()
                 hit = True
         except Exception as e:
-            say(f"（北向持仓取数失败：{type(e).__name__}）")
+            say(f"（北向持仓取数失败：{type(e).__name__}: {e}）")
             say()
 
     if not hit:
@@ -510,9 +520,14 @@ def sec_technical(code, price, cost):
         hi = w["high"].max()
         hi_date = w.loc[w["high"].idxmax(), "date"].date()
 
+        asof = str(w.iloc[-1]["date"])[:10]
+        say(f"均线与区间高点基于**前复权日线，最后一根 {asof}**；"
+            f"现价是实时报价，两者基准日可能差一天。")
+        say()
         say("| 项 | 值 |")
         say("|---|---|")
-        say(f"| 现价 | {price:.2f} |")
+        say(f"| 现价（实时） | {price:.2f} |")
+        say(f"| 收盘（{asof}） | {w.iloc[-1]['close']:.2f} |")
         for n in (20, 60, 120):
             v = last[f"ma{n}"]
             if pd.notna(v):
@@ -558,10 +573,24 @@ def sec_technical(code, price, cost):
 
 # ── 7 海外同业 ──────────────────────────────────────────────────────────────
 def sec_peers(code, peers, self_df):
-    if not peers:
-        return
     say("## 7　海外同业对照")
     say()
+    if not peers:
+        # ⚠ 静默跳过是错的:读者看到章节从 6 跳到 8,不知道是漏了还是不适用。
+        #   **缺一层证据必须说出来**,否则报告看起来比实际更完整。
+        say("**这只票没有匹配到海外对照组** —— 它所属的板块不在 `PEER_SETS` 里。")
+        say()
+        say("可能是两种情况，含义完全不同：")
+        say()
+        say("1. **这条链的需求端本来就不在海外**（内需驱动的行业）—— "
+            "这一层不适用，不是缺失")
+        say("2. **有海外同业但工具还没配** —— 那是工具的缺口，"
+            "用 `--peers TK1,TK2` 手工指定，并把这个行业补进 `PEER_SETS`")
+        say()
+        say("> **别把「没这一层」当成「这一层没问题」。**领先指标少一个，"
+            "后面的判据就少一层交叉验证，结论的确信度要相应下调。")
+        say()
+        return
     say("A 股这条赛道的需求端在海外。只看 A 股会漏掉「海外同行在涨而 A 股在跌」"
         "这类背离 —— 那通常说明跌的是情绪不是需求。")
     say()
@@ -581,8 +610,16 @@ def sec_peers(code, peers, self_df):
     if self_df is not None and len(self_df) > 66:
         s5, s22, s66 = (pct_chg(self_df, 5), pct_chg(self_df, 22),
                         pct_chg(self_df, 66))
+        asof = str(self_df.iloc[-1]["date"])[:10]
         say(f"| **本股** | {s5:+.1f}% | **{s22:+.1f}%** | {s66:+.1f}% | "
             f"{self_df.iloc[-1]['close']:.2f} |")
+        say()
+        # ⚠ 这里的收盘价是**日线最后一根**,第 1 层的现价是**实时报价**,
+        #   两者基准日可能差一天。同一份报告里出现两个不同的「现价」而不说明,
+        #   读者会以为数据错了。实测:002353 日线 08-27 收 136.24、
+        #   实时 08-28 报 130.70(当天跌 4%)。
+        say(f"> 本股与海外同业的收盘价都取**日线最后一根（{asof}）**；"
+            f"第 1 层的现价是**实时报价**，两者基准日可能差一天。")
         say()
         good = [c for _, c in rows if c is not None]
         if good and s22 is not None:
