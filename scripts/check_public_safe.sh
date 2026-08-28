@@ -30,7 +30,8 @@ scan() {  # scan <名称> <grep 正则> [额外排除正则]
   out=$(grep -rainE "$pat" . \
         --exclude-dir=.git --exclude-dir=data --exclude-dir=repos \
         --exclude-dir=__pycache__ --exclude-dir=.venv \
-        --exclude=desensitize.py --exclude=check_public_safe.sh 2>/dev/null)
+        --exclude=desensitize.py --exclude=check_public_safe.sh \
+        --exclude='personal.patterns*' --exclude='personal.rules*' 2>/dev/null)
   [ -n "$excl" ] && out=$(printf '%s' "$out" | grep -vE "$excl")
   out=$(printf '%s' "$out" | grep -v '^$')
   if [ -n "$out" ]; then
@@ -51,16 +52,14 @@ scan "无真实成交价(x.xxx)" '[0-9]{2,5}\.[0-9]{3}([^0-9]|$)' '[0-9]{4}-[0-9
 
 # 2 家目录与用户名
 scan "无绝对家目录路径"   '/home/[a-z][a-z0-9_-]+|/Users/[a-z][a-z0-9_-]+'
-scan "无主机名/用户名"     '\bzhangbh\b|\bubuntu[0-9]{3}\b|@[a-z0-9-]+\.local'
+scan "无主机名/用户名"     '@[a-z0-9-]+\.local'
 
 # 3 私有仓与内部资产
 # ⚠ 不要写成 `-private\b`:_lab_root() 的候选路径里有 astock-lab-private,
 #    那是**给使用者自己的私有副本留的路径约定**,不是引用作者的私有仓。
 #    只查真实存在的私有仓名与内部目录。
-scan "无私有仓引用"        'whetstone|stock-lab-data-private|claude-tools/internal|/internal/'
-# 点名一个私有仓 = 宣告它存在。作者自己的私有仓名单写在这,新增私有仓要往这加。
-scan "无私有仓名"          'a-stock-ai|自家仓|claude-config-private|paseo-internal|whetstone-memory'
-scan "无内部项目代号"      '\bpax\b|paxsz|af7|a133|m9200|sk900|rk3576|payDroid'
+scan "无私有仓引用"        'claude-tools/internal|/internal/'
+scan "无脱敏破句(泛)"      '本仓 [一二三四两0-9]|在 本仓|本仓 仓|本仓-'
 
 # 4 个人设备与环境
 scan "无个人设备"          'mac-?mini|我的电脑|我这台|家里那台'
@@ -74,10 +73,31 @@ scan "无真实决策记录"      '"stock": *"[0-9]{6}".*"price"|principles\.jso
 #    「真身在 本仓 两个 skill 里」这种读不通的句子,以及没被规则覆盖的旧仓名。
 # ⚠ 要词边界:公开仓自己就叫 a-stock-lab,裸写 stock-lab 会把 astock-lab/tools 也命中
 scan "无旧仓名残留"        '(^|[^a-z-])stock-lab/(tools|docs|repos)|claude-tools/stock-lab'
-scan "无脱敏破句"          '本仓 [一二三四两0-9]|在 本仓|本仓 仓|本仓-'
 
 # 7 凭证类(不该有,但零成本再查一遍)
 scan "无凭证"              'ghp_[A-Za-z0-9]{20,}|sk-[A-Za-z0-9]{20,}|BEGIN [A-Z ]*PRIVATE KEY|password *= *["'"'"'][^"'"'"']'
+
+# ── 你自己的标识清单(不进仓)──────────────────────────────────────────────
+# ★ 为什么单独放一个文件而不是写在本脚本里:
+#   **这份清单本身就是敏感的。**「要查 <某登录名>、<某私有仓>、<某项目代号>」这行字
+#   一旦发布,等于给任何人一份「该找什么」的索引 —— 比它防住的单点泄露更糟。
+#   2026-08-28 实测:公开仓的这个脚本当时就写着作者的用户名、5 个私有仓名、
+#   7 个内部项目代号,而闸把自己排除在扫描外,所以一直没报。
+#
+# 格式:每行 `标签<TAB>正则`,# 开头是注释。见 personal.patterns.example。
+PERSONAL="$(dirname "$(readlink -f "$0")")/personal.patterns"
+if [ -f "$PERSONAL" ]; then
+  echo "-- 你自己的标识清单($(grep -cvE '^\s*(#|$)' "$PERSONAL") 条)--"
+  while IFS=$'\t' read -r plabel ppat; do
+    case "$plabel" in ''|\#*) continue ;; esac
+    [ -z "$ppat" ] && continue
+    scan "$plabel" "$ppat"
+  done < "$PERSONAL"
+else
+  printf "  ⏭  没有 scripts/personal.patterns —— 只跑了通用检查\n"
+  printf "     你自己的用户名、主机名、私有仓名、内部代号要单独列进那个文件\n"
+  printf "     (它被 .gitignore 掉,不会流向公开仓)。抄 personal.patterns.example\n"
+fi
 
 echo
 if [ "$fail" -gt 0 ]; then

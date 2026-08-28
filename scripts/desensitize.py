@@ -1,14 +1,14 @@
 #!/usr/bin/env python3
-"""desensitize —— 把个人痕迹换成中性示例。公开仓与 whetstone 镜像共用这一份规则。
+"""desensitize —— 把个人痕迹换成中性示例。公开仓与任何镜像副本共用这一份规则。
 
 用法:
     python3 scripts/desensitize.py <目录或文件>...
     python3 scripts/desensitize.py --dry <目录>      # 只看会改什么,不写
 
 为什么要写成脚本而不是手改:
-    ① 公开仓和 whetstone 各存一份 skill,**必须逐字节相同**才能让 md5 对账闸有意义。
+    ① 公开仓和镜像副本各存一份 skill,**必须逐字节相同**才能让 md5 对账闸有意义。
        手改两遍必然不一致。
-    ② 以后每次从 whetstone 同步过来都要再跑一次 —— 手动流程会漏,脚本不会。
+    ② 以后每次从镜像同步过来都要再跑一次 —— 手动流程会漏,脚本不会。
     ③ 替换规则本身就是「哪些算个人痕迹」的权威定义,写在代码里才有人维护。
 
 替换的不是「敏感词」而是**个人痕迹**:真实持仓成本、家目录用户名、
@@ -21,43 +21,48 @@ import sys
 from pathlib import Path
 
 # (正则, 替换, 说明) —— 顺序有意义:先长后短,避免部分替换
-RULES = [
-    # 真实持仓成本 → 明显是示例的整数值。精确到小数点后三位一看就是真成交价
-    (r"498\.957",  "400.00",  "真实成本价 → 示例值"),
-    (r"1157\.897", "1100.00", "真实成本价 → 示例值"),
-    # 家目录与用户名
-    (r"/home/zhangbh/claude-tools/whetstone-skills-private/skills",
-     "$LAB/skills", "私有仓 skill 路径 → 本仓相对"),
-    (r"~/claude-tools/whetstone-skills-private/skills",
-     "$LAB/skills", "私有仓 skill 路径 → 本仓相对"),
-    (r"/home/zhangbh/claude-tools/stock-lab", "$LAB", "本机路径 → 变量"),
-    (r"~/claude-tools/stock-lab", "$LAB", "本机路径 → 变量"),
-    (r"/home/zhangbh/akshare-venv", "$VENV", "本机 venv → 变量"),
-    (r"~/akshare-venv", "$VENV", "本机 venv → 变量"),
-    (r"/home/zhangbh", "$HOME", "家目录 → 变量"),
-    # macOS 侧的家目录 —— 2026-08-28 被闸抓到过:只写 /home/ 会漏掉 /Users/
-    (r"/Users/sky/stock-lab", "$LAB", "另一台机器的路径 → 变量"),
-    (r"/Users/sky", "$HOME", "macOS 家目录 → 变量"),
-    (r"MacBook sky|\bsky 的|\bsky\b(?= 的?终端)", "另一台机器", "设备昵称"),
-    (r"\bzhangbh\b", "user", "用户名"),
-    # 私有仓引用
-    (r"whetstone-skills-private", "本仓", "私有仓名"),
-    (r"\bwhetstone\b", "本仓", "私有仓名"),
-    # 个人设备与网络环境
-    (r"家用 ?mac-?mini|家用 ?Mac ?mini|家里的 ?mac-?mini", "另一台网络不受限的机器", "个人设备"),
+# ★ 你自己的替换规则(用户名 / 私有仓名 / 内部代号)放 personal.rules,**不进仓**。
+#   理由和 check_public_safe.sh 的 personal.patterns 一样:
+#   「把 <你的登录名> 换成 user」这行字本身就泄露了 <你的登录名>。
+#   2026-08-28 实测:这个文件当时就写着作者两台机器的用户名和 5 个私有仓名,
+#   而它被排除在闸的扫描外(否则会自命中),所以一直没报。
+#   格式:每行 `正则<TAB>替换<TAB>说明`,# 开头是注释。见 personal.rules.example。
+def _load_personal():
+    f = Path(__file__).resolve().parent / "personal.rules"
+    if not f.exists():
+        return []
+    out = []
+    for ln in f.read_text(encoding="utf-8").splitlines():
+        if not ln.strip() or ln.lstrip().startswith("#"):
+            continue
+        p = ln.split("\t")
+        if len(p) >= 2:
+            out.append((p[0], p[1], p[2] if len(p) > 2 else "个人规则"))
+    return out
+
+
+# ── 通用规则:与「作者是谁」无关,可以公开 ──────────────────────────────────
+GENERIC = [
+    # 精确到小数点后三位的价格,几乎一定是真实成交价
+    (r"\b\d{2,5}\.\d{3}\b", "<成本价>", "疑似真实成交价"),
+    # 任何人的家目录绝对路径
+    (r"/home/[a-z][a-z0-9_-]*", "$HOME", "Linux 家目录"),
+    (r"/Users/[a-z][a-z0-9_-]*", "$HOME", "macOS 家目录"),
+    (r"~/akshare-venv", "$VENV", "常见 venv 路径"),
+    # 个人设备与网络环境的描述
+    (r"家用 ?mac-?mini|家用 ?Mac ?mini|家里的 ?mac-?mini",
+     "另一台网络不受限的机器", "个人设备"),
     (r"mac-?mini", "另一台机器", "个人设备"),
     (r"公司网 ?\+ ?全局代理", "受限网络 + 全局代理", "工作环境"),
     (r"公司网", "受限网络", "工作环境"),
     (r"公司机(?:器)?", "这台受限机器", "工作环境"),
     (r"家里(?:可用|能用|可以)", "网络不受限时可用", "个人环境"),
-    (r"TbusOS 自有", "作者自有", "账号名"),
-    # 私有仓名 —— 2026-08-28 被闸抓到:公开文档点名私有仓等于宣告它存在,
-    # 而且那几段还引用了它的内部文件路径和实现缺陷
-    (r"`repos/a-stock-ai/[^`]*`", "某自研脚手架的设计文档", "私有仓内部路径"),
-    (r"repos/a-stock-ai", "某自研脚手架", "私有仓内部路径"),
-    (r"a-stock-ai(?:（自家仓）|\(自家仓\))?", "某自研脚手架", "私有仓名"),
-    (r"自家仓", "一个自研脚手架", "私有仓指代"),
 ]
+
+# 个人规则**先跑** —— 它们更具体(如整条私有仓路径),先替换掉才不会被
+# 通用的「/home/<任意用户名>」规则切成半截。
+RULES = _load_personal() + GENERIC
+
 
 
 def apply(text):
@@ -94,7 +99,7 @@ def main():
     # ⚠ 带 `desensitize:skip` 标记的文件不改。
     #   为什么需要这个:闸(check_public_safe.sh)的正则里**本来就写着要查的那些词**,
     #   跑到它头上会把正则改掉 —— 闸从此查一个不存在的模式,永远全绿,
-    #   而你以为它在把关。2026-08-28 真踩过:whetstone 被换成「本仓」,
+    #   而你以为它在把关。2026-08-28 真踩过:某个私有仓名被替换掉,
     #   闸当场开始扫自己的说明文字,同时不再查真正的私有仓名。
     kept = []
     for f in files:

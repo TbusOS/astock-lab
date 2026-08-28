@@ -19,6 +19,12 @@ reports/
 # 第三方开源仓,各自有独立 .git
 repos/
 
+# ★ 你自己的标识清单 —— 用户名 / 主机名 / 私有仓名 / 内部代号。
+#   **清单本身就是敏感的**:发布出去等于给别人一份「该找什么」的索引,
+#   比它防住的单点泄露更糟。只有带占位的 .example 进仓。
+scripts/personal.patterns
+scripts/personal.rules
+
 # 环境
 # install.sh 生成的别名文件,里面是本机绝对路径
 aliases.sh
