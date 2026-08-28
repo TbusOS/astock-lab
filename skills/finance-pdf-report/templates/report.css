@@ -1,0 +1,115 @@
+/* 金融分析报告 · A4 打印样式
+ * 配套 scripts/html2pdf.mjs（playwright 打印）。用法见 SKILL.md。
+ *
+ * 语义色是固定的，不要自创：报告要同时表达「涨跌」和「好坏」，
+ * 而这两者不总是一致（股价跌但基本面好），所以用「橙=风险/亏损、绿=正面」
+ * 比 A 股的红涨绿跌更清楚。
+ */
+
+:root {
+  --ink:      #141413;   /* 骨架：正文、主体柱 */
+  --paper:    #faf9f5;
+  --line:     #e6e4dd;
+  --accent:   #d97757;   /* 主强调 / 警示 / 你的成本线 / 亏损 */
+  --accent-d: #c2613f;
+  --good:     #788c5d;   /* 正面 / 增长 / 目标价上行 */
+  --good-d:   #5d7045;
+  --muted:    #6b6a5f;   /* 中性 / 次要 / 说明文字 */
+  --muted-d:  #4a4a42;
+  --warn:     #c9913f;   /* 提示 / 待观察 / 名不副实 */
+  --warn-d:   #8a5a2a;
+  --data:     #6a9bcc;   /* 图例第三类 */
+  --data-d:   #4a7bab;
+}
+
+@page { size: A4; margin: 14mm 12mm; }
+
+* { box-sizing: border-box; }
+
+body {
+  background: var(--paper);
+  color: var(--ink);
+  font-size: 11.5px;
+  line-height: 1.65;
+  font-family: "Noto Sans SC", "Source Han Sans SC", "PingFang SC",
+               "Microsoft YaHei", sans-serif;
+  margin: 0;
+}
+
+.wrap { max-width: 186mm; margin: 0 auto; }   /* A4 可用宽度 */
+
+/* ── 封面 ─────────────────────────────────────────────────────────────── */
+.tag {
+  font-size: 10px; letter-spacing: .08em; color: var(--muted);
+  text-transform: uppercase;
+}
+h1 { font-size: 27px; font-weight: 600; margin: 6px 0 4px; line-height: 1.25; }
+.sub { color: var(--muted); margin: 0 0 14px; }
+
+.kpis { display: flex; gap: 8px; margin: 14px 0 18px; }
+.kpi {
+  flex: 1; border: 1px solid var(--line); border-radius: 6px;
+  padding: 9px 11px; background: #fff;
+}
+.kpi .k { font-size: 9.5px; color: var(--muted); }
+.kpi .v { font-size: 18px; font-weight: 600; margin-top: 2px; }
+.kpi .v.up   { color: var(--good-d); }
+.kpi .v.down { color: var(--accent-d); }
+
+/* ── 结论块：第一屏就要看到 ────────────────────────────────────────────── */
+.verdict {
+  border-left: 3px solid var(--accent);
+  background: #fdf3ee;
+  padding: 11px 14px;
+  margin: 0 0 18px;
+  page-break-inside: avoid;
+}
+.verdict .head { font-weight: 600; font-size: 13px; color: var(--accent-d); }
+
+/* ── 标题层级 ─────────────────────────────────────────────────────────── */
+h2 {
+  font-size: 18px; font-weight: 600;
+  border-bottom: 1px solid var(--line);
+  padding-bottom: 5px; margin: 22px 0 10px;
+}
+h2 .n { color: var(--accent); margin-right: 6px; }   /* 橙色序号 */
+h3 { font-size: 13.5px; font-weight: 600; margin: 14px 0 6px; }
+
+/* ── 表格：永远比正文小一号 ────────────────────────────────────────────── */
+table {
+  width: 100%; border-collapse: collapse; font-size: 10.5px;
+  margin: 8px 0 4px; page-break-inside: avoid;
+}
+th, td { border: 1px solid var(--line); padding: 5px 7px; text-align: left; }
+th { background: #f2f0e9; font-size: 10px; font-weight: 600; }
+td.num, th.num { text-align: right; font-variant-numeric: tabular-nums; }
+.up   { color: var(--good-d); }
+.down { color: var(--accent-d); }
+.flat { color: var(--muted); }
+
+.src { font-size: 9.5px; color: var(--muted); margin: 2px 0 12px; }
+
+/* ── 图 ───────────────────────────────────────────────────────────────── */
+figure { margin: 12px 0; page-break-inside: avoid; }
+figure svg { width: 100%; height: auto; }
+figcaption { font-size: 9.5px; color: var(--muted); margin-top: 4px; }
+/* SVG 里的文字不要小于 9px，打印后看不清 */
+svg text { font-size: 9px; font-family: inherit; }
+
+/* ── 分页控制 ─────────────────────────────────────────────────────────── */
+.pb    { page-break-before: always; }
+.avoid { page-break-inside: avoid; }
+
+/* ── 提示块 ───────────────────────────────────────────────────────────── */
+blockquote {
+  margin: 8px 0; padding: 7px 11px;
+  border-left: 2px solid var(--muted); background: #f4f2ec;
+  color: var(--muted-d); font-size: 10.5px;
+}
+blockquote.warn { border-color: var(--warn); background: #fbf5ea; color: var(--warn-d); }
+blockquote.risk { border-color: var(--accent); background: #fdf3ee; color: var(--accent-d); }
+
+code { font-family: ui-monospace, SFMono-Regular, Menlo, monospace; font-size: 10px; }
+
+.foot { margin-top: 22px; padding-top: 8px; border-top: 1px solid var(--line);
+        font-size: 9.5px; color: var(--muted); }

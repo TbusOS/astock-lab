@@ -113,7 +113,9 @@ node <本 skill>/scripts/html2pdf.mjs <报告.html> <输出.pdf> ["页脚文字"
 
 ## 三　CSS 模板
 
-完整可复制模板在 `templates/report.css`;HTML 骨架在 `templates/report.html`。
+完整可复制模板在 `templates/report.css`;HTML 骨架在 `templates/report.html`
+(骨架里带一份最小示例报告 —— 封面 / 结论块 / 三档操作表 / SVG 图 / 数据来源表,
+`node scripts/html2pdf.mjs templates/report.html /tmp/x.pdf` 直接就能渲出来看)。
 关键点:
 
 ```css
@@ -155,6 +157,8 @@ body  { background:#faf9f5; color:#141413; font-size:11.5px; line-height:1.65;
 ## 五　交付前自检(不能只看"生成成功")
 
 `md2pdf` 会打印 "PDF generated" 但内容可能是空页或断字。**必须渲染出来逐页看**:
+
+需要 `pymupdf`(`pip install pymupdf`),`scripts/check_pdf.py` 也靠它:
 
 ```bash
 python3 - <<'EOF'

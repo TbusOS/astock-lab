@@ -1,0 +1,86 @@
+<!doctype html>
+<meta charset="utf-8">
+<title>示例公司（000000）持仓决策报告</title>
+<!-- 把 report.css 拷到报告同级，或直接内联进 <style> ——
+     报告文件夹整个拷走仍能渲染。 -->
+<link rel="stylesheet" href="report.css">
+
+<div class="wrap">
+
+  <!-- ── 封面：标签 + 大标题 + 一行说明 + 四个 KPI ────────────────────── -->
+  <div class="tag">持仓决策报告 · 2026-08-28</div>
+  <h1>示例公司（000000）</h1>
+  <p class="sub">季报后复核 · 数据均为本次实时拉取，来源见文末</p>
+
+  <div class="kpis">
+    <div class="kpi"><div class="k">现价</div><div class="v">409.10</div></div>
+    <div class="kpi"><div class="k">成本</div><div class="v">400.00</div></div>
+    <div class="kpi"><div class="k">浮盈亏</div><div class="v up">+2.3%</div></div>
+    <div class="kpi"><div class="k">净利同比</div><div class="v up">+91%</div></div>
+  </div>
+
+  <!-- ── 结论块：读者最想知道「接下来怎么做」，埋在第 5 页 = 失败 ──────── -->
+  <div class="verdict">
+    <div class="head">结论：持有不加仓，等三季报</div>
+    <p>领先指标（云厂 Capex 指引、海外同业）没有恶化，支撑继续持有；
+       但增速能否延续的历史基准率只有 24%，不足以支撑加仓。
+       三季报净利同比跌破 30% 即重新评估。</p>
+  </div>
+
+  <!-- ── 1 操作建议：三档 + 触发判据 ──────────────────────────────────── -->
+  <h2><span class="n">1</span>操作建议</h2>
+  <table class="avoid">
+    <tr><th>档位</th><th>动作</th><th>触发条件</th></tr>
+    <tr><td>现在</td><td>持有</td><td>—</td></tr>
+    <tr><td>加仓</td><td class="up">分批</td><td>下期 Capex 指引再上调，且回撤至 MA60</td></tr>
+    <tr><td>减仓</td><td class="down">先减三成</td><td>净利同比跌破 30%，或毛利率掉 5pp</td></tr>
+  </table>
+  <p class="src">来源：判据由 preport 第 9 层生成</p>
+
+  <!-- ── 2 证据：领先指标优先，每条配图 ───────────────────────────────── -->
+  <h2><span class="n">2</span>证据（领先指标优先）</h2>
+  <figure>
+    <svg viewBox="0 0 600 160" role="img" aria-label="单季 Capex 柱状图">
+      <!-- 数字直接标在柱子上方，不要让读者去比对坐标轴 -->
+      <g fill="#141413">
+        <rect x="40"  y="70" width="46" height="70" />
+        <rect x="110" y="52" width="46" height="88" />
+        <rect x="180" y="34" width="46" height="106" />
+      </g>
+      <g fill="#141413" text-anchor="middle">
+        <text x="63"  y="64">21.4</text>
+        <text x="133" y="46">26.8</text>
+        <text x="203" y="28">35.8</text>
+      </g>
+      <g fill="#6b6a5f" text-anchor="middle">
+        <text x="63"  y="153">25Q4</text>
+        <text x="133" y="153">26Q1</text>
+        <text x="203" y="153">26Q2</text>
+      </g>
+      <!-- ⚠ 负值柱的标签要放在柱子**外侧**，否则被柱子盖住（实测踩过） -->
+    </svg>
+    <figcaption>单季 Capex 连续三季加速——需求端没有转弱的直接证据（单位：十亿美元）</figcaption>
+  </figure>
+
+  <!-- ── 3 风险：变差的部分，不藏 ─────────────────────────────────────── -->
+  <h2><span class="n">3</span>风险</h2>
+  <blockquote class="risk">股东户数环比 +101,578 户（+65%），高位筹码分散，
+    反弹会遇到更重的解套抛压。</blockquote>
+
+  <!-- 4 基本面估值 / 5 技术位 / 6 数据完备性 依次往下，滞后指标放后面当验证 -->
+
+  <!-- ── 末尾：逐条数据来源表（强制，不能省）──────────────────────────── -->
+  <h2 class="pb"><span class="n">7</span>数据来源</h2>
+  <table class="avoid">
+    <tr><th>数据</th><th>来源</th><th>时效</th><th>工具</th></tr>
+    <tr><td>行情 / 技术位</td><td>新浪 hq.sinajs.cn</td><td>实时</td><td>astock</td></tr>
+    <tr><td>财务 / 股东户数</td><td>东财 datacenter-web</td><td>中报 08-25</td><td>efdata / preport</td></tr>
+    <tr><td>估值历史分位</td><td>baostock</td><td>2020 至今</td><td>hcheck</td></tr>
+    <tr><td>券商一致预期</td><td>同花顺</td><td>19 家机构</td><td>consensus</td></tr>
+    <tr><td>北美云厂 Capex</td><td><b>SEC EDGAR XBRL 官方</b></td><td>至 2026Q2</td><td>capex</td></tr>
+    <tr><td>历史基准率</td><td>东财全市场季度业绩</td><td>12 期</td><td>baserate</td></tr>
+  </table>
+  <p class="src">时效那一列不能省——「股东户数截止 06-30」和「行情实时」是完全不同的证据强度。</p>
+
+  <div class="foot">本报告是机械判据，不是投资建议。所有决策和后果都是读者自己的。</div>
+</div>
