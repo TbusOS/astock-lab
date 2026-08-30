@@ -43,6 +43,17 @@ for _k in ("http_proxy", "https_proxy", "HTTP_PROXY", "HTTPS_PROXY",
            "all_proxy", "ALL_PROXY"):
     os.environ.pop(_k, None)
 
+# ── 全局 socket 超时(必须在 import akshare/requests 之前设)────────────────
+# 为什么要这条:2026-08-30 实测,东财 datacenter 瞬时抖动时本脚本**永久挂起**
+# 而不是报错 —— 连接全在 CLOSE_WAIT(对端已关、本地还在等读),卡了 10 分钟没动。
+# akshare 内部的请求普遍不带 timeout,改不动它;但 requests/urllib3 在未显式指定
+# timeout 时会退回 socket 的全局默认值,所以在这里设一次就能兜住所有下游库。
+#
+# **挂起比报错更糟**:报错会被上层看到并重试,挂起会静默卡死整条流水线。
+import socket  # noqa: E402
+
+socket.setdefaulttimeout(float(os.environ.get("ASTOCK_SOCKET_TIMEOUT", "30")))
+
 import argparse  # noqa: E402
 import time  # noqa: E402
 from pathlib import Path  # noqa: E402

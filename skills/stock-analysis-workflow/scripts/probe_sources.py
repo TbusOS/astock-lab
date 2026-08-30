@@ -62,6 +62,16 @@ def http(url, ua=UA, timeout=12, referer=None):
 
 # ── 能用的源 ────────────────────────────────────────────────────────────────
 WORKING = [
+    ("**北美钻机数**（油服赛道领先指标）",
+     "oilpriceapi.com 转载 Baker Hughes　⚠️ 官方站 rigcount.bakerhughes.com "
+     "从中国大陆不可达（直连/代理/headless 浏览器全 000），只能走转载源，数字是二手的",
+     "https://www.oilpriceapi.com/data/rig-count", UA, "rigcount"),
+    ("**人民币汇率中间价**（出口占比高的标的必看）",
+     "中国外汇交易中心 chinamoney.com.cn（人民银行授权发布，官方口径）"
+     "　⚠️ pageSize ≥ 100 会返回 403 —— 是分页超限不是被封，单页封顶 90 并翻页",
+     "https://www.chinamoney.com.cn/ags/ms/cm-u-bk-ccpr/CcprHisNew"
+     "?startDate=2026-08-20&endDate=2026-08-29&currency=USD/CNY&pageNum=1&pageSize=10",
+     UA, "fx"),
     ("行情快照 / 五档 / 日线", "新浪 hq.sinajs.cn",
      "https://hq.sinajs.cn/list=sz300502", UA, "astock"),
     ("逐笔成交", "腾讯 web.sqt.gtimg.cn",
@@ -142,7 +152,7 @@ BLOCKED = [
         "tried": "SEC 8-K 的 EX-99.1 全文正则扫（谷歌、Meta 命中，这两家零命中）",
         "alt": "谷歌、Meta 的指引拿得到（`capex --guidance`）。"
                "微软/亚马逊要靠 transcript，而 transcript 源本机都不通:"
-               "**roic.ai 403 · Motley Fool 404**（2026-08-28 实测，"
+               "**roic.ai 403 · Motley Fool 是付费墙**（2026-08-28 首测记为 404；2026-08-29 在 mac mini 上用带 headless Chromium 的抓取器复测，拿到的具体 transcript 页正文只有 163 字的 “Premium Investing Services” 墙 —— **不是 JS 渲染问题，是收费**，换抓取器没用）（"
                "一份外部实现走的就是这两条路，它自己产出的 best_guidance "
                "五家全是空的）;Seeking Alpha 是 JS 渲染的 Next.js payload;"
                "EarningsCall / Alpha Vantage 有 API 但要 key。"
@@ -155,7 +165,7 @@ BLOCKED = [
         "why": "**精确的月度数字**确实只有 LightCounting 等第三方咨询机构的付费库有。"
                "但下面那条『替代』2026-08-28 被推翻了一半 —— 见下。",
         "tried": "akshare（只有宏观进出口总额，无 HS 编码细分）· "
-                 "海关总署 stats.customs.gov.cn（**412，WAF 挡爬虫**）· "
+                 "海关总署 stats.customs.gov.cn（**412，WAF 挡爬虫；2026-08-29 用 headless Chromium 的 stealth 模式复测仍 412，真浏览器也过不去**）· "
                  "国贸通 gtradedata.com（页面可达但**数据在付费报告里**）· "
                  "LightCounting 官网 newsletter 页（抓下来 0 条可用条目）",
         "alt": "★ **券商研报 PDF 免费可下，而且里面有真数字，不只是定性描述。**"
@@ -179,6 +189,19 @@ BLOCKED = [
 ]
 
 # ── 曾经试过但不用的(避免重复踩)─────────────────────────────────────────
+# 依赖缺失导致的「静默降级」——不是网络问题，但表现得像数据源没了。
+# 2026-08-29 在 mac mini 全新装机时两条都踩到：
+# (import 名, pip 名, 影响什么, 缺了会怎样)
+# ⚠ import 名 ≠ pip 名：edgartools 装完 import 的是 edgar，pymupdf 装完 import 的是 fitz。
+#   用 pip 名去 find_spec 会永远报「缺失」——这条注释是踩过才写的。
+DEPS = [
+    ("fitz", "pymupdf", "research --dig 的产业抽句",
+     "缺了照样出研报列表，只是「产业数据抽句」整节变成一行安装提示 —— "
+     "最容易被当成「这批研报没有量价数据」，其实是没装库"),
+    ("edgar", "edgartools", "capex / capex --guidance",
+     "缺了直接执行失败，领先指标整块没有"),
+]
+
 REJECTED = [
     ("Yahoo Finance / yfinance", "本机 403（直连）/ 429（走代理）",
      "美股日线改用 akshare `stock_us_daily`（新浪源）"),
@@ -248,6 +271,22 @@ def main():
         say("|---|---|---|")
         for src, why, alt in REJECTED:
             say(f"| {src} | {why} | {alt} |")
+        say()
+
+    import importlib.util
+    missing = [(mod, pkg, what, note) for mod, pkg, what, note in DEPS
+               if importlib.util.find_spec(mod) is None]
+    if missing:
+        say("## 四　本机缺的 Python 依赖（会让工具静默降级）")
+        say()
+        say("这一节和上面三节不同：**不是网络问题，但表现得像数据源没了**。")
+        say()
+        say("| 包 | 影响什么 | 缺了会怎样 |")
+        say("|---|---|---|")
+        for _mod, pkg, what, note in missing:
+            say(f"| `{pkg}` | {what} | {note} |")
+        say()
+        say("修复：`.venv/bin/pip install " + " ".join(pkg for _, pkg, _, _ in missing) + "`")
         say()
 
     say("---")

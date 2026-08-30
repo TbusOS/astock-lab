@@ -25,6 +25,15 @@ for _k in ("http_proxy", "https_proxy", "HTTP_PROXY", "HTTPS_PROXY",
            "all_proxy", "ALL_PROXY"):
     os.environ.pop(_k, None)
 
+# ── 全局 socket 超时(必须在 import akshare/efinance 之前设)──────────────
+# akshare / efinance 内部的请求普遍不带 timeout。对端瞬时抖动时会**永久挂起**
+# 而不是报错(2026-08-30 实测:连接全在 CLOSE_WAIT,卡 10 分钟没动)。
+# requests/urllib3 未显式指定 timeout 时会退回 socket 全局默认值,所以这里设一次
+# 就能兜住所有下游库。**挂起比报错更糟** —— 报错能被重试,挂起会静默卡死流水线。
+import socket  # noqa: E402
+
+socket.setdefaulttimeout(float(os.environ.get("ASTOCK_SOCKET_TIMEOUT", "30")))
+
 import requests  # noqa: E402  (必须放在去代理之后)
 
 SINA_HEADERS = {"Referer": "https://finance.sina.com.cn"}

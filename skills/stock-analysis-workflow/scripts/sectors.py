@@ -26,6 +26,13 @@
    实际能不能取到,以 `probe_sources` 为准。标 ❌ 的是还没做的工具缺口。
 """
 
+import os
+import socket
+
+# akshare / efinance 内部请求不带 timeout，对端抖动时会**永久挂起**而不是报错
+# （2026-08-30 实测：连接全在 CLOSE_WAIT，卡 10 分钟没动）。设一次全局默认值兜住下游库。
+socket.setdefaulttimeout(float(os.environ.get("ASTOCK_SOCKET_TIMEOUT", "30")))
+
 import argparse
 import sys
 from pathlib import Path
@@ -68,11 +75,17 @@ SECTORS = {
                          ("KLAC", "科天"), ("ASML", "阿斯麦")],
         "invalid_keys": ["baserate_growth"],
         "leading": [
-            ("下游晶圆厂/面板厂资本开支", "2-4 季", "❌ 无工具（看 SEMI 数据、大厂财报电话会）", "❌"),
+            ("下游晶圆厂资本开支", "2-4 季",
+             "capex --tickers TSM,INTC,MU（SEC EDGAR，官方）", "✅"),
+            ("设备商同业资本开支/景气", "2-4 季",
+             "capex --tickers AMAT,LRCX,KLAC", "✅"),
+            ("面板厂资本开支（做面板模组设备时看这个）", "2-4 季",
+             "⚠ 京东方 000725 / TCL科技 000100 的现金流量表「购建固定资产支付的现金」，需手工取",
+             "⚠"),
             ("在手订单 / 合同负债", "1-3 季", "⚠ 手工看财报「合同负债」科目", "⚠"),
-            ("海外同业股价", "数周", "preport 第 7 层", "⚠ peer set 未配"),
+            ("海外同业股价", "数周", "preport 第 7 层", "✅ AMAT LRCX KLAC ASML"),
         ],
-        "peers": "❌ 未配。可用 AMAT LRCX KLAC ASML（前道）· 面板设备无好对标",
+        "peers": "AMAT LRCX KLAC ASML（前道设备）· 面板模组设备无美股好对标，看下游面板厂",
         "invalid": ["低基数下的净利同比（+198% 可能只是 0.2 亿 → 0.6 亿）"],
         "criteria": "**先看订单不看利润**。合同负债/存货的同比是真领先;"
                     "净利在小基数上波动极大,别当信号。估值用 PB 分位不用 PE。",
@@ -84,9 +97,11 @@ SECTORS = {
                          ("BKR", "贝克休斯"), ("FTI", "TechnipFMC")],
         "invalid_keys": ["peg", "baserate_growth", "pe_percentile"],
         "leading": [
-            ("国际油价（Brent/WTI）", "1-2 季", "❌ 无工具", "❌"),
-            ("全球油气资本开支", "2-4 季", "❌ 无工具（三桶油+国际油企资本开支计划）", "❌"),
-            ("北美钻机数（Baker Hughes rig count）", "1-2 季", "❌ 无工具（每周公布，免费）", "❌"),
+            ("国际油价（Brent/WTI）", "1-2 季", "commodity --group 油", "✅"),
+            ("全球油气资本开支", "2-4 季",
+             "capex --tickers SLB,HAL,BKR,XOM,CVX（SEC EDGAR，官方）", "✅"),
+            ("北美钻机数（Baker Hughes rig count）", "1-2 季",
+             "rigcount（官方站国内不可达，走转载源）", "✅"),
             ("海外油服同业股价", "数周", "preport 第 7 层", "✅ SLB HAL BKR FTI"),
         ],
         "peers": "SLB HAL BKR FTI",
