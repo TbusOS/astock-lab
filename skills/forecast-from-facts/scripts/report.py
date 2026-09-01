@@ -19,7 +19,14 @@ import argparse
 import glob
 import json
 from datetime import date
+import sys
 from pathlib import Path
+
+# tools/ 下是软链,__file__ 指向真实目录,但 sys.path[0] 是软链所在目录 ——
+# 于是 import quarterly 找不到。**把脚本真实所在目录加进 sys.path**,
+# 这样 `tools/report.py` 和 `skills/.../report.py` 两条路径都能直接跑,
+# 不需要调用方设 PYTHONPATH(别人 clone 下来第一件事就会卡在这)。
+sys.path.insert(0, str(Path(__file__).resolve().parent))
 
 import forecast
 import quarterly
@@ -85,8 +92,10 @@ def sec_conclusion(v, f, mkt, name, code, L):
                  f"现价 {pos}。")
     cp = f.get("产业链位置")
     if cp:
-        L.append(f"- 相对北美四大云厂资本开支,这家公司近四季的增速倍数从 "
-                 f"{cp['近四季首']:.2f}x 变到 {cp['近四季末']:.2f}x —— **{cp['判断']}**。")
+        L.append(f"- 相对{cp['上游']},这家公司的增速倍数在 {cp['期间']} 之间从 "
+                 f"{cp['起点']:.2f}x 变到 {cp['终点']:.2f}x —— **{cp['判断']}**。")
+    elif f.get("上游说明"):
+        L.append(f"- 产业链位置**算不了**:{f['上游说明']}")
     n = f["可用方法数"]
     L.append(f"- 预测的把握程度:三个方法里 **{n} 个适用**。"
              + ("三个都不适用,下季营收我们没有可靠推法。" if n == 0 else

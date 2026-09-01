@@ -47,7 +47,14 @@ import glob
 import json
 import statistics
 from datetime import date
+import sys
 from pathlib import Path
+
+# tools/ 下是软链,__file__ 指向真实目录,但 sys.path[0] 是软链所在目录 ——
+# 于是 import quarterly 找不到。**把脚本真实所在目录加进 sys.path**,
+# 这样 `tools/report.py` 和 `skills/.../report.py` 两条路径都能直接跑,
+# 不需要调用方设 PYTHONPATH(别人 clone 下来第一件事就会卡在这)。
+sys.path.insert(0, str(Path(__file__).resolve().parent))
 
 import quarterly
 

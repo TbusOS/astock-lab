@@ -26,7 +26,14 @@ import argparse
 import json
 import statistics
 from datetime import date
+import sys
 from pathlib import Path
+
+# tools/ 下是软链,__file__ 指向真实目录,但 sys.path[0] 是软链所在目录 ——
+# 于是 import quarterly 找不到。**把脚本真实所在目录加进 sys.path**,
+# 这样 `tools/report.py` 和 `skills/.../report.py` 两条路径都能直接跑,
+# 不需要调用方设 PYTHONPATH(别人 clone 下来第一件事就会卡在这)。
+sys.path.insert(0, str(Path(__file__).resolve().parent))
 
 import quarterly
 
@@ -155,11 +162,24 @@ def m_qoq(qs, target):
 #   第一性原理:云厂开支是这条链的总蛋糕,公司增速相对它的比值就是分到的份额变化。
 CAP_Q = {"Q1": "03-31", "Q2": "06-30", "Q3": "09-30", "Q4": "12-31"}
 
+# ★ 每只票的上游是谁。**拿错分母比不算更糟**:杰瑞股份(油服设备)对着云厂
+#   资本开支算出来的倍数是 0.04x —— 数字有,含义没有,而且看起来像个结论。
+#   没登记的票不做这一节,并在报告里说明「这只票的上游我们还没有对应的数据源」。
+UPSTREAM_OF = {
+    "300502": "cloud",     # 新易盛     光模块 → 云厂建数据中心
+    "300308": "cloud",     # 中际旭创   光模块 → 同上
+    "300476": "cloud",     # 胜宏科技   AI 服务器 PCB → 同上
+    "002353": "oilgas",    # 杰瑞股份   油服设备 → 油气公司资本开支
+    # 688328 深科达:面板/半导体封装设备,上游是面板厂和封测厂的资本开支。
+    #   京东方 / TCL 华星 / 长电 这些没有 SEC 申报,得另找数据源 —— 现在没有,所以不做。
+}
+UPSTREAM_NAME = {"cloud": "北美四大云厂资本开支", "oilgas": "五家国际油气公司资本开支"}
 
-def cloud_capex_yoy(raw: Path) -> dict:
-    """四家云厂季度资本开支合计的同比。**只在四家都有数的季度才算** ——
+
+def capex_yoy(raw: Path, group: str) -> dict:
+    """某条链上游季度资本开支合计的同比。**只在成员全都有数的季度才算** ——
     少一家就少几百亿美元,同比会凭空多出几十个百分点,而且不报错。"""
-    files = sorted((raw / "overseas_facts").glob("*-capex.json"))
+    files = sorted((raw / "overseas_facts").glob(f"*-capex-{group}.json"))
     if not files:
         return {}
     env = json.loads(files[-1].read_text(encoding="utf-8"))
@@ -179,8 +199,8 @@ def cloud_capex_yoy(raw: Path) -> dict:
     return out
 
 
-def chain_position(qs, capyoy: dict) -> dict | None:
-    """公司营收同比 ÷ 云厂开支同比,按季排。看趋势不看绝对值。"""
+def chain_position(qs, capyoy: dict, up_name: str) -> dict | None:
+    """公司营收同比 ÷ 上游开支同比,按季排。看趋势不看绝对值。"""
     if not capyoy:
         return None
     pts = []
@@ -190,7 +210,7 @@ def chain_position(qs, capyoy: dict) -> dict | None:
         # 上游同比为负或接近 0 时比值会爆掉(除以小数),这几季直接跳过
         if cy is None or ry is None or cy < 10:
             continue
-        pts.append({"period": r["period"], "云厂capex同比": round(cy, 1),
+        pts.append({"period": r["period"], "上游同比": round(cy, 1),
                     "公司营收同比": round(ry, 1), "倍数": round(ry / cy, 2)})
     if len(pts) < 4:
         return None
@@ -204,7 +224,14 @@ def chain_position(qs, capyoy: dict) -> dict | None:
              "增速和上游开支基本同步")
     trend = ("优势在扩大" if last > first * 1.15 else
              "优势在收窄" if last < first * 0.85 else "大致平稳")
-    return {"points": pts, "近四季首": first, "近四季末": last,
+    # ⚠ 这几个点**不一定是连续的四个季度**。上游增速低于 10% 的季度被跳过了
+    #   (除以接近 0 的数会让倍数爆掉),所以油气这类增速温和的链上,序列是稀疏的。
+    #   杰瑞股份实测:最后四个可比点跨了 2023Q4~2025Q4 整整两年。
+    #   写成「近四季」会让人以为是最近一年的变化 —— 必须把真实期间打出来。
+    span = f"{pts[-4]['period']} → {pts[-1]['period']}"
+    sparse = len(pts) >= 4 and pts[-1]["period"][:4] != pts[-4]["period"][:4]
+    return {"points": pts, "起点": first, "终点": last, "期间": span,
+            "稀疏": sparse, "上游": up_name,
             "水平": level, "趋势": trend, "判断": f"{level},{trend}"}
 
 
@@ -225,6 +252,13 @@ def margins(qs, n=4):
     return {"毛利率": rng(gm), "三费率": rng(ex), "净利率": rng(npm),
             "财务费用": rng(fin),
             "财务费用波动": (max(fin) - min(fin)) if len(fin) >= 2 else None}
+
+
+def _chain(code: str, qs, raw: Path):
+    g = UPSTREAM_OF.get(code)
+    if not g:
+        return None
+    return chain_position(qs, capex_yoy(raw, g), UPSTREAM_NAME[g])
 
 
 def build(code: str, raw: Path, target: str | None) -> dict:
@@ -260,7 +294,11 @@ def build(code: str, raw: Path, target: str | None) -> dict:
     return {"code": code, "最新已披露": latest, "预测期": target,
             "methods": methods, "可用方法数": len(good),
             "营收区间": band, "区间取法": band_note,
-            "产业链位置": chain_position(qs, cloud_capex_yoy(raw)),
+            "产业链位置": _chain(code, qs, raw),
+            "上游说明": (UPSTREAM_NAME.get(UPSTREAM_OF.get(code), "")
+                        or f"这只票({code})的上游我们还没有对应的数据源,"
+                           f"这一节不做 —— 拿云厂资本开支去衡量一家上游不是云厂的公司,"
+                           f"算得出数字但没有含义"),
             "利润率": mg, "归母净利区间": profit,
             "生成日": date.today().isoformat(),
             "来源": d["来源"]}
@@ -319,20 +357,29 @@ def render(f: dict) -> str:
                  f"(中枢 {y(p['mid'])} 亿)**,= 营收区间 × 近四季净利率区间。")
     cp = f.get("产业链位置")
     if cp:
+        up = cp["上游"]
         L.append("")
         L.append(f"**在产业链里的位置:{cp['判断']}**"
-                 f"(相对北美四大云厂资本开支的增速倍数,近四季 "
-                 f"{cp['近四季首']:.2f}x → {cp['近四季末']:.2f}x)")
+                 f"(相对{up}的增速倍数,{cp['期间']} 从 "
+                 f"{cp['起点']:.2f}x 变到 {cp['终点']:.2f}x)")
+        if cp["稀疏"]:
+            L.append("")
+            L.append(f"> ⚠ 这四个可比点**跨了不止一年**({cp['期间']})。"
+                     f"上游增速低于 10% 的季度被跳过了 —— 除以接近 0 的数会让倍数爆掉。"
+                     f"所以这条趋势反映的是更长时间的变化,不是最近一年的。")
         L.append("")
-        L.append("| 季度 | 云厂capex同比 | 公司营收同比 | 倍数 |")
+        L.append(f"| 季度 | {up}同比 | 公司营收同比 | 倍数 |")
         L.append("|---|---:|---:|---:|")
         for x in cp["points"][-6:]:
-            L.append(f"| {x['period']} | {x['云厂capex同比']:.1f}% "
+            L.append(f"| {x['period']} | {x['上游同比']:.1f}% "
                      f"| {x['公司营收同比']:.1f}% | {x['倍数']:.2f}x |")
         L.append("")
-        L.append("> 云厂开支是这条链的总量,公司增速相对它的倍数就是分到的份额在怎么变。"
+        L.append(f"> {up}是这条链的总量,公司增速相对它的倍数就是分到的份额在怎么变。"
                  "**这个倍数本身不稳(历史离散度 70% 以上),不能拿来推营收** —— "
-                 "但它的方向是硬信息。云厂开支数据来自四家的 10-Q/10-K 申报原值(SEC XBRL)。")
+                 "但它的方向是硬信息。上游数据来自各家 10-Q/10-K 的申报原值(SEC XBRL)。")
+    elif f.get("上游说明"):
+        L.append("")
+        L.append(f"**在产业链里的位置:算不了。** {f['上游说明']}")
 
     L.append("")
     L.append("**这份预测怎么被推翻**:")

@@ -41,6 +41,21 @@ CIK = {
     "COHR": "0000820318", "LITE": "0001633978", "FN": "0001408710",
     "CRDO": "0001807794", "MRVL": "0001835632", "AVGO": "0001730168",
     "ANET": "0001596532", "CIEN": "0000936395",
+    # 油气:杰瑞股份这类油服设备商的上游是油气公司的资本开支,不是云厂
+    "XOM": "0000034088", "CVX": "0000093410", "SLB": "0000087347",
+    "HAL": "0000045012", "BKR": "0001701605",
+}
+
+# 每条产业链的"上游总量"由谁代表。**这张表决定了「产业链位置」那一节拿谁做分母** ——
+# 拿错分母比不算更糟:杰瑞股份(油服)对着云厂资本开支算出来的倍数是 0.04x,
+# 数字有,含义没有,而且看起来像个结论。
+UPSTREAM = {
+    "cloud":  {"tickers": ["MSFT", "AMZN", "GOOGL", "META"],
+               "名称": "北美四大云厂资本开支",
+               "适用": "AI 算力链(光模块 / PCB / 交换机)"},
+    "oilgas": {"tickers": ["XOM", "CVX", "SLB", "HAL", "BKR"],
+               "名称": "五家国际油气公司资本开支",
+               "适用": "油服设备"},
 }
 
 CONCEPT = {
@@ -117,7 +132,7 @@ def quarters(concept_json) -> dict:
             if e[5:7] in ("03", "06", "09", "12")}
 
 
-def fetch(kind: str, tickers: list[str], out: Path) -> int:
+def fetch(kind: str, tickers: list[str], out: Path, group: str = "") -> int:
     from datetime import datetime
     today = dt.date.today().isoformat()
     d = out / "overseas_facts"
@@ -159,7 +174,10 @@ def fetch(kind: str, tickers: list[str], out: Path) -> int:
            "params": {"tickers": tickers, "concepts": CONCEPT[kind]},
            "ok": bool(payload), "rows": len(payload),
            "error": "；".join(miss) or None, "data": payload}
-    p = d / f"{today}-{kind}.json"
+    # ⚠ 文件名必须带分组。2026-09-02 踩到:油气那批用同一个文件名,
+    #   **直接把云厂那份覆盖掉了**,而且没有任何提示 —— 文件还在、格式还对,
+    #   只是里面换了一批公司。下游算出来的"产业链位置"会变成拿油气当分母。
+    p = d / (f"{today}-{kind}-{group}.json" if group else f"{today}-{kind}.json")
     p.write_text(json.dumps(env, ensure_ascii=False, indent=1), encoding="utf-8")
     print(f"→ {p}  ({len(payload)}/{len(tickers)} 家)")
     return 0 if payload else 1
@@ -170,10 +188,19 @@ def main() -> int:
                                  formatter_class=argparse.RawDescriptionHelpFormatter)
     ap.add_argument("kind", choices=sorted(CONCEPT))
     ap.add_argument("--out", default="data/raw")
-    ap.add_argument("--tickers", default="MSFT,AMZN,GOOGL,META")
+    ap.add_argument("--group", choices=sorted(UPSTREAM) + ["all"], default="all",
+                    help="抓哪条链的上游;不给就全抓")
+    ap.add_argument("--tickers", help="直接指定,给了就忽略 --group")
     a = ap.parse_args()
-    return fetch(a.kind, [x.strip().upper() for x in a.tickers.split(",") if x.strip()],
-                 Path(a.out))
+    if a.tickers:
+        return fetch(a.kind, [x.strip().upper() for x in a.tickers.split(",") if x.strip()],
+                     Path(a.out), "custom")
+    groups = sorted(UPSTREAM) if a.group == "all" else [a.group]
+    rc = 0
+    for g in groups:
+        print(f"── {g}:{UPSTREAM[g]['名称']}")
+        rc |= fetch(a.kind, UPSTREAM[g]["tickers"], Path(a.out), g)
+    return rc
 
 
 if __name__ == "__main__":
