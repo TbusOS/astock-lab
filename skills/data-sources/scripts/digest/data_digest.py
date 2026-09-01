@@ -121,17 +121,28 @@ def stock_doc(code: str, raw: Path) -> str:
         if not items:
             missing.append((cn, lead, why))
             continue
+        # 同一类里,比该类最新一次抓取**早**的条目是上一轮代码留下的残留。
+        # 落盘时按设计不删(失败要能被看见),但在给人看的文档里必须标出来 ——
+        # 否则读的人会把「已经换掉的旧源失败」当成「今天有 4 个源坏了」。
+        newest = max((e.get("fetched_at") or "") for _, e in items)
         for fname, e in items:
+            e = dict(e)
+            e["_stale"] = (e.get("fetched_at") or "") < newest[:16]
             rows.append((g, cn, lead, e, fname))
 
-    ok = sum(1 for r in rows if r[3].get("ok"))
+    cur = [r for r in rows if not r[3].get("_stale")]
+    ok = sum(1 for r in cur if r[3].get("ok"))
+    stale = len(rows) - len(cur)
     L += ["## 一、总览", "",
-          f"共 **{len(rows)}** 条数据,成功 **{ok}** 条、失败 **{len(rows)-ok}** 条;"
-          f"另有 **{len(missing)}** 类还没抓。", "",
+          f"最近一轮 **{len(cur)}** 条,成功 **{ok}** 条、失败 **{len(cur)-ok}** 条;"
+          f"另有 **{len(missing)}** 类还没抓"
+          + (f",以及 **{stale}** 条更早那轮的旧记录(标 🕗,不计入本轮)。" if stale else "。"), "",
           "| 类别 | 属性 | 源 | 抓取时间 | 行数 | 状态 |",
           "|---|---|---|---|---|---|"]
     for g, cn, lead, e, _ in rows:
-        st = "✅" if e.get("ok") else f"❌ {str(e.get('error') or '')[:34]}"
+        st = ("✅" if e.get("ok") else f"❌ {str(e.get('error') or '')[:34]}")
+        if e.get("_stale"):
+            st = "🕗 旧记录 · " + ("成功" if e.get("ok") else "失败")
         L.append(f"| {cn} | {LEAD_MARK[lead]} | `{e.get('source','')}` "
                  f"| {str(e.get('fetched_at') or '')[:16]} | {e.get('rows')} | {st} |")
     L.append("")
@@ -151,11 +162,13 @@ def stock_doc(code: str, raw: Path) -> str:
             if cn not in seen:
                 seen.add(cn)
                 L += [f"### {cn}", "", f"> {GROUP_META[g][2]}", ""]
-            st = "✅" if e.get("ok") else "❌"
+            st = "🕗" if e.get("_stale") else ("✅" if e.get("ok") else "❌")
             L.append(f"- {st} `{e.get('source')}`　·　抓于 {str(e.get('fetched_at') or '')[:16]}"
                      f"　·　{brief(g, e)}")
-            if not e.get("ok"):
+            if not e.get("ok") and not e.get("_stale"):
                 L.append(f"    - 失败原因:`{str(e.get('error'))[:120]}`")
+            elif e.get("_stale"):
+                L.append("    - 🕗 更早那轮留下的记录,当前代码已不再用这个源")
         L.append("")
 
     if missing:
