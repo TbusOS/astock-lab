@@ -345,7 +345,7 @@ def fetch_chips(code, out):
         import efinance as ef
         write(out, "chips", code, "前十大流通股东",
               env("efinance get_top10_stock_holder_info",
-                  data=df_json(ef.stock.get_top10_stock_holder_info(code, top=4))))
+                  data=df_json(retry(lambda: ef.stock.get_top10_stock_holder_info(code, top=4)))))
     except Exception as e:
         write(out, "chips", code, "前十大流通股东",
               env("efinance get_top10_stock_holder_info", ok=False, err=repr(e)))

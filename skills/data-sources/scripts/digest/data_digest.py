@@ -63,6 +63,32 @@ def load(raw: Path, group: str, key: str, day: str | None) -> list[tuple[str, di
     return out
 
 
+def mark_runs(envs: list[dict], gap_min: int = 10) -> None:
+    """按 fetched_at 的时间空档把条目切成「轮次」,只有**最新一轮**不算旧记录。
+    gap_min 分钟以上的空档视为换了一轮 —— 一轮抓取内部各源相差通常在几分钟内,
+    而两次跑之间(改代码、重跑)一般隔得更久。"""
+    import datetime as _dt
+    ts = []
+    for e in envs:
+        try:
+            ts.append(_dt.datetime.fromisoformat(e.get("fetched_at")))
+        except Exception:
+            ts.append(None)
+    known = sorted(t for t in ts if t)
+    if not known:
+        for e in envs:
+            e["_stale"] = False
+        return
+    cut = known[-1]                       # 从最新往回走,遇到大空档就断
+    for a, b in zip(reversed(known[:-1]), reversed(known[1:])):
+        if (b - a).total_seconds() > gap_min * 60:
+            cut = b
+            break
+        cut = a
+    for e, t in zip(envs, ts):
+        e["_stale"] = bool(t and t < cut)
+
+
 def brief(group: str, e: dict) -> str:
     """每条数据的一句话摘要 —— 按类别定制,不是通用的 len()。
     通用摘要('12 行')读的人什么也看不出来。"""
@@ -121,15 +147,14 @@ def stock_doc(code: str, raw: Path) -> str:
         if not items:
             missing.append((cn, lead, why))
             continue
-        # 同一类里,比该类最新一次抓取**早**的条目是上一轮代码留下的残留。
-        # 落盘时按设计不删(失败要能被看见),但在给人看的文档里必须标出来 ——
-        # 否则读的人会把「已经换掉的旧源失败」当成「今天有 4 个源坏了」。
-        newest = max((e.get("fetched_at") or "") for _, e in items)
+        # 识别「抓取轮次」:同一轮的条目时间挨在一起,两轮之间有明显空档。
+        # ⚠ 不能拿「该类最大 fetched_at」当基准 —— 同一轮里各源本来就差几分钟,
+        #   那样会把同轮的成功条目误标成旧记录(2026-09-02 踩过:
+        #   23:59 成功的大宗交易被 00:00 的另一个源重试顶成了「旧记录」)。
         for fname, e in items:
-            e = dict(e)
-            e["_stale"] = (e.get("fetched_at") or "") < newest[:16]
-            rows.append((g, cn, lead, e, fname))
+            rows.append((g, cn, lead, dict(e), fname))
 
+    mark_runs([r[3] for r in rows])
     cur = [r for r in rows if not r[3].get("_stale")]
     ok = sum(1 for r in cur if r[3].get("ok"))
     stale = len(rows) - len(cur)
