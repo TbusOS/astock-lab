@@ -4,8 +4,13 @@
     report.py <code> --name 新易盛 [--raw data/raw] [--out 报告.md]
 
 报告的骨架就是我们的判断顺序,不是抄来的目录:
-    1 结论      2 事实(单季实际)  3 我们的预测  4 产业链位置
-    5 我们算的估值   6 市场怎么想 ← 单独放最后   7 怎么核对
+    0 你手上这笔(成本/浮盈亏)   1 结论        2 事实(单季实际)
+    3 我们的预测                4 产业链位置   5 我们算的估值
+    6 筹码与杠杆                7 限售解禁与价格位置              8 海外同业对照
+    9 市场怎么想 ← 单独放这里   10 操作判断   11 怎么核对
+
+第 0 节放最前面:**没有成本就没法谈该怎么办**。一份不知道你买在哪的报告,
+只能回答「这家公司值多少钱」,回答不了「你该拿还是该减」。
 
 为什么市场预期放最后:
     放前面会污染判断 —— 先看到「20 家机构均值 198 亿」再去算,很难不往那个数靠。
@@ -30,6 +35,7 @@ sys.path.insert(0, str(Path(__file__).resolve().parent))
 
 import forecast
 import quarterly
+import sections_position as pos
 import valuation
 
 
@@ -69,16 +75,24 @@ def market_view(raw: Path, code: str) -> dict:
     return out
 
 
-def sec_conclusion(v, f, mkt, name, code, L):
+def sec_conclusion(v, f, mkt, name, code, L, cost=None):
     band, spot, our = v["前瞻PE带"], v["现价"], v["我们预测的未来四季净利"]
     L.append("## 1 结论")
     L.append("")
+    if cost and spot:
+        pl = (spot["close"] / cost - 1) * 100
+        L.append(f"- **成本 {cost:,.3f},现价 {spot['close']:,.2f}"
+                 f"({spot['date']}),浮盈亏 {pl:+.1f}%**"
+                 + (f",回本需涨 {(cost / spot['close'] - 1) * 100:+.1f}%。"
+                    if pl < 0 else "。")
+                 + f" 市值 {yi(spot['close'] * v['总股本'], 0)} 亿。")
     if not (spot and our):
-        L.append("数据不足,给不出结论。缺的部分见第 7 节。")
+        L.append("数据不足,给不出结论。缺的部分见第 11 节。")
         return
     cap = spot["close"] * v["总股本"]
     pe_mid = cap / our["mid"] if our["mid"] else None
-    L.append(f"- **现价 {spot['close']:.2f} 元({spot['date']}),市值 {yi(cap, 0)} 亿。**")
+    if not cost:
+        L.append(f"- **现价 {spot['close']:.2f} 元({spot['date']}),市值 {yi(cap, 0)} 亿。**")
     if pe_mid:
         L.append(f"- 按**我们自己**推的未来四季归母净利 {yi(our['low'])}~{yi(our['high'])} 亿"
                  f"(中枢 {yi(our['mid'])} 亿),现价对应前瞻 PE **{pe_mid:.1f}x**。")
@@ -103,7 +117,7 @@ def sec_conclusion(v, f, mkt, name, code, L):
                 "两个以上互相印证。"))
     L.append("")
     L.append("> 上面每一个数都来自公司自己的报表或 SEC 申报原值。"
-             "**没有任何一个数来自机构的盈利预测。** 市场怎么看见第 6 节。")
+             "**没有任何一个数来自机构的盈利预测。** 市场怎么看见第 9 节。")
     L.append("")
 
 
@@ -261,14 +275,14 @@ def sec_valuation(v, f, L):
 
 
 def sec_market(mkt, L, gap=None):
-    L.append("## 6 市场怎么想(仅作对照,**没有进入上面任何一步**)")
+    L.append("## 9 市场怎么想(仅作对照,**没有进入上面任何一步**)")
     L.append("")
-    L.append("上面五节的每个结论都不依赖这一节。放在这里是为了回答一个问题:"
+    L.append("上面每一节的结论都不依赖这一节。放在这里是为了回答一个问题:"
              "**我们和市场差在哪,谁的依据更硬。**")
     L.append("")
     c = mkt.get("一致预期")
     if c:
-        L.append("### 6.1 卖方一致预期(别人的预测)")
+        L.append("### 9.1 卖方一致预期(别人的预测)")
         L.append("")
         L.append("| 年度 | 预测机构数 | 最小 | 均值 | 最大 |")
         L.append("|---|---:|---:|---:|---:|")
@@ -286,7 +300,7 @@ def sec_market(mkt, L, gap=None):
             L.append("")
     r = mkt.get("评级") or []
     if r:
-        L.append("### 6.2 近期评级(别人的判断)")
+        L.append("### 9.2 近期评级(别人的判断)")
         L.append("")
         L.append("| 发布日 | 机构 | 评级 | 变化 | 目标价下限 | 上限 |")
         L.append("|---|---|---|---|---:|---:|")
@@ -353,7 +367,7 @@ def consensus_gap(v, d, mkt) -> list[str]:
 
 
 def sec_how(code, v, L):
-    L.append("## 7 每个数怎么核对 / 怎么重跑")
+    L.append("## 11 每个数怎么核对 / 怎么重跑")
     L.append("")
     L.append("| 这份报告里的 | 从哪来 | 怎么重跑 |")
     L.append("|---|---|---|")
@@ -365,14 +379,23 @@ def sec_how(code, v, L):
              f"| `tools/fetch_all.py --codes {code} --group financials` |")
     L.append("| 北美四大云厂季度资本开支 | **SEC XBRL 申报原值** `data/raw/overseas_facts/*-capex.json` "
              "| `tools/sec_facts.py capex` |")
-    L.append(f"| 一致预期 / 评级(仅第 6 节) | 同花顺、巨潮 `data/raw/consensus/`、`data/raw/ratings/` "
+    L.append(f"| 股东户数 / 前十大流通股东 / 资金流 / 解禁 / 融资融券 | 东财、akshare "
+             f"`data/raw/chips/{code}/` "
+             f"| `tools/fetch_all.py --codes {code} --group chips` |")
+    L.append("| 海外同业季度营收与资本开支 | 各家 10-Q/10-K(yfinance 转录) "
+             "`data/raw/overseas/<代码>/*-季度财报.json` | `tools/fetch_all.py --peers` |")
+    L.append("| **持仓成本** | 你自己填的 `private/portfolio/holdings.json` "
+             "| 改那个文件,重跑本报告 |")
+    L.append(f"| 一致预期 / 评级(仅第 9 节) | 同花顺、巨潮 `data/raw/consensus/`、`data/raw/ratings/` "
              f"| `tools/fetch_all.py --codes {code} --group consensus,ratings` |")
     L.append("")
     L.append("整份报告重跑:")
     L.append("")
     L.append("```bash")
     L.append("cd ~/astock-lab-private")
-    L.append(f"tools/report.py {code} --name <名称> --out private/reports/<日期>/{code}.md")
+    L.append(f"tools/report.py {code} --name <名称> \\")
+    L.append("    --holdings private/portfolio/holdings.json \\")
+    L.append(f"    --out private/reports/<日期>/{code}.md")
     L.append("```")
     L.append("")
     L.append("**这份报告不做的事**:不引用任何机构的盈利预测作为输入;"
@@ -381,7 +404,10 @@ def sec_how(code, v, L):
     L.append("")
 
 
-def build(code: str, name: str, raw: Path, target: str | None) -> str:
+def build(code: str, name: str, raw: Path, target: str | None,
+          holdings: Path | None = None) -> str:
+    position = pos.load_position(holdings, code)
+    cost = position.get("cost")
     v = valuation.build(code, raw, target)
     f = v["预测"]
     d = quarterly.build(raw, code, since="2023")
@@ -396,19 +422,26 @@ def build(code: str, name: str, raw: Path, target: str | None) -> str:
     else:
         v["未来四季净利同比"] = None
 
-    L = [f"# {name}({code}) 投资分析", ""]
     spot = v["现价"]
+    L = [f"# {name}({code}) 持仓决策报告", ""]
     L.append(f"生成于 {date.today().isoformat()} · 最新已披露 **{f['最新已披露']}**"
              + (f" · 收盘价 {spot['close']:.2f} 元({spot['date']})" if spot else ""))
     L.append("")
     L.append("> **这份报告的结论全部建在公司自己披露的报表和 SEC 申报原值上,"
-             "不引用任何机构的盈利预测。** 市场怎么看单独放在第 6 节,只作事后对照。")
+             "不引用任何机构的盈利预测。** 市场怎么看单独放在第 9 节,只作事后对照。")
     L.append("")
-    sec_conclusion(v, f, mkt, name, code, L)
+    pos.sec_position(raw, code, position, spot, L)
+    sec_conclusion(v, f, mkt, name, code, L, cost)
     sec_facts(d, L)
     sec_forecast(f, L)
     sec_valuation(v, f, L)
+    pos.sec_chips(raw, code, 6, L)
+    pos.sec_technical(raw, code, cost, spot, 7, L)
+    grp = forecast.UPSTREAM_OF.get(code)
+    pos.sec_peers(raw, {"cloud": "AI算力链-同业", "oilgas": "油气设服"}.get(grp), 8, L)
     sec_market(mkt, L, consensus_gap(v, d, mkt))
+    pick_mult = valuation.pick_multiple(v["前瞻PE带"], v.get("未来四季净利同比"))
+    pos.sec_action(v, f, d, cost, spot, pick_mult, 10, L)
     sec_how(code, v, L)
     return "\n".join(L) + "\n"
 
@@ -421,8 +454,13 @@ def main() -> int:
     ap.add_argument("--raw", default="data/raw")
     ap.add_argument("--target")
     ap.add_argument("--out")
+    ap.add_argument("--holdings", default="private/portfolio/account.json",
+                    help="持仓文件。优先给 account.json(有股数/仓位/融资负债),"
+                         "退而求其次 holdings.json(只有成本)")
     a = ap.parse_args()
-    md = build(a.code, a.name or a.code, Path(a.raw), a.target)
+    hp = Path(a.holdings) if a.holdings else None
+    md = build(a.code, a.name or a.code, Path(a.raw), a.target,
+               hp if hp and hp.exists() else None)
     if a.out:
         Path(a.out).parent.mkdir(parents=True, exist_ok=True)
         Path(a.out).write_text(md, encoding="utf-8")
