@@ -3,7 +3,8 @@
 
     industry.py taiwan                      台湾光通信月营收(滞后 ~1 月)★ 唯一真领先
     industry.py comtrade [--hs 851762]      UN Comtrade 出口量价(滞后 ~21 月)
-    industry.py cite <研报PDF目录>            从券商研报里抽第三方机构引用(LightCounting 等)
+    industry.py lc                          LightCounting 官方免费 newsletter(一手)★
+    industry.py cite <研报PDF目录>            从券商研报里抽第三方机构引用(二手,可交叉验证)
     industry.py all --out data/raw
 
 为什么要这三条:LightCounting 是光模块行业量价的事实标准,订阅制拿不到。
@@ -231,10 +232,48 @@ def extract_citations(pdf_dir: Path, out: Path):
     return hits
 
 
+# ── ④ LightCounting 免费 newsletter ──────────────────────────────────
+def fetch_lightcounting(out: Path, limit=25):
+    """LightCounting 自己的 newsletter **全文免费公开**。
+
+    2026-09-02 实测:`/newsletters` 列出 43 篇,每篇 `/newsletter/en/<slug>` 约 3,800 字,
+    含真实预测数字(如「2026 数据中心交换机销售 +86% YoY、5 年 CAGR 36%、
+    scale-up ASIC 53% CAGR」)。他们放头条数字来带订阅。
+
+    所以**不用去 GitHub 找 LightCounting 的数据,也不用二手引用** —— 一手的就在官网。
+    付费的是完整报告(分速率的出货量/ASP/厂商份额明细),免费的是结论与增速。
+    """
+    base = "https://www.lightcounting.com"
+    try:
+        html = get(f"{base}/newsletters", headers=UA, timeout=40).text
+    except Exception as e:
+        write(out, "LightCounting-newsletter", env("LightCounting newsletters", ok=False, err=repr(e)))
+        return []
+    slugs = sorted(set(re.findall(r'href="(/newsletter/en/[^"]+)"', html)), reverse=True)
+    got = []
+    for sl in slugs[:limit]:
+        try:
+            t = get(base + sl, headers=UA, timeout=40).text
+            t = re.sub(r"<script.*?</script>|<style.*?</style>|<nav.*?</nav>", "", t, flags=re.S)
+            body = re.sub(r"\s+", " ", re.sub(r"<[^>]+>", " ", t)).strip()
+            got.append({"slug": sl, "url": base + sl, "chars": len(body),
+                        "标题": sl.rsplit("/", 1)[-1].rsplit("-", 1)[0].replace("-", " "),
+                        "正文": body[:6000]})
+        except Exception:
+            got.append({"slug": sl, "url": base + sl, "error": "抓取失败"})
+    write(out, "LightCounting-newsletter",
+          env("LightCounting newsletters(官方免费全文)", url=f"{base}/newsletters",
+              params={"列出篇数": len(slugs), "已抓": len(got)},
+              note="**一手来源,免费公开**。付费的是完整报告(分速率出货量/ASP/厂商份额),"
+                   "免费的是结论与增速。比从券商研报里抠二手引用可靠得多",
+              data=got))
+    return got
+
+
 def main() -> int:
     ap = argparse.ArgumentParser(description=__doc__,
                                  formatter_class=argparse.RawDescriptionHelpFormatter)
-    ap.add_argument("cmd", choices=["taiwan", "comtrade", "cite", "all"])
+    ap.add_argument("cmd", choices=["taiwan", "comtrade", "cite", "lc", "all"])
     ap.add_argument("pdf_dir", nargs="?", default="data/raw/research")
     ap.add_argument("--hs", default="851762")
     ap.add_argument("--out", default="data/raw")
@@ -256,6 +295,12 @@ def main() -> int:
             print(f"   {x['期间']}  ${x['金额USD']:>16,.0f}  量 {x['数量']:>16,.0f}  "
                   f"均价 ${x['均价USD']}")
         print(f"   月度前沿 {fr},滞后 {lag} 个月 —— ⚠ 不能当领先指标")
+    if a.cmd in ("lc", "all"):
+        print("\n④ LightCounting 免费 newsletter(**一手来源**)")
+        lc = fetch_lightcounting(out)
+        for x in lc[:8]:
+            print(f"   {x.get('chars','?'):>6} 字  {x.get('标题','')[:70]}")
+
     if a.cmd in ("cite", "all"):
         print(f"\n③ 研报里的第三方机构引用({a.pdf_dir})")
         hits = extract_citations(Path(a.pdf_dir), out)
