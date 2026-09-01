@@ -31,9 +31,16 @@ from pathlib import Path
 # 于是 import quarterly 找不到。**把脚本真实所在目录加进 sys.path**,
 # 这样 `tools/report.py` 和 `skills/.../report.py` 两条路径都能直接跑,
 # 不需要调用方设 PYTHONPATH(别人 clone 下来第一件事就会卡在这)。
-sys.path.insert(0, str(Path(__file__).resolve().parent))
+# source_catalog 住在 data-sources 那个 skill 下 —— 数据源目录属于取数,不属于预测。
+# 两个 skill 的 scripts 目录都加进 sys.path,tools/ 软链和仓内真实路径都能跑。
+_here = Path(__file__).resolve().parent
+sys.path.insert(0, str(_here))
+sys.path.insert(0, str(_here.parent.parent / "data-sources" / "scripts"))
 
+
+import advice
 import forecast
+import source_catalog as catalog
 import quarterly
 import sections_position as pos
 import valuation
@@ -75,10 +82,18 @@ def market_view(raw: Path, code: str) -> dict:
     return out
 
 
-def sec_conclusion(v, f, mkt, name, code, L, cost=None):
+def sec_conclusion(v, f, mkt, name, code, L, cost=None, adv=None):
     band, spot, our = v["前瞻PE带"], v["现价"], v["我们预测的未来四季净利"]
     L.append("## 1 结论")
     L.append("")
+    if adv:
+        L.append(f"# → **{adv['动作']}**　·　**{adv['期限']}**")
+        L.append("")
+        L.append(f"三个维度打分:估值 {adv['估值'][0]:+d}、"
+                 f"基本面 {adv['基本面'][0]:+d}、确定性 {adv['确定性'][0]:+d},"
+                 f"合计 **{adv['总分']:+d}**。{adv['档位理由']}。"
+                 f"**打分规则和具体怎么做见第 11 节。**")
+        L.append("")
     if cost and spot:
         pl = (spot["close"] / cost - 1) * 100
         L.append(f"- **成本 {cost:,.3f},现价 {spot['close']:,.2f}"
@@ -375,41 +390,17 @@ def consensus_gap(v, d, mkt) -> list[str]:
 
 
 def sec_how(code, v, L):
-    L.append("## 11 每个数怎么核对 / 怎么重跑")
+    L.append("## 12 数据来源:每条都能点开核对")
     L.append("")
-    L.append("| 这份报告里的 | 从哪来 | 怎么重跑 |")
-    L.append("|---|---|---|")
-    L.append(f"| 单季营收/毛利率/存货/预付款 | 新浪转录的公司三大表 `data/raw/financials/{code}/*-利润表.json` 等 "
-             f"| `tools/fetch_all.py --codes {code} --group statements` |")
-    L.append(f"| 收盘价、前复权序列 | baostock 日线 `data/raw/quotes/{code}/*-qfq.json` "
-             f"| `tools/fetch_all.py --codes {code} --group quotes` |")
-    L.append(f"| 总股本 | baostock query_profit_data `data/raw/financials/{code}/` "
-             f"| `tools/fetch_all.py --codes {code} --group financials` |")
-    L.append("| 北美四大云厂季度资本开支 | **SEC XBRL 申报原值** `data/raw/overseas_facts/*-capex.json` "
-             "| `tools/sec_facts.py capex` |")
-    L.append(f"| 股东户数 / 前十大流通股东 / 资金流 / 解禁 / 融资融券 | 东财、akshare "
-             f"`data/raw/chips/{code}/` "
-             f"| `tools/fetch_all.py --codes {code} --group chips` |")
-    L.append("| 海外同业季度营收与资本开支 | 各家 10-Q/10-K(yfinance 转录) "
-             "`data/raw/overseas/<代码>/*-季度财报.json` | `tools/fetch_all.py --peers` |")
-    L.append("| **持仓成本** | 你自己填的 `private/portfolio/holdings.json` "
-             "| 改那个文件,重跑本报告 |")
-    L.append(f"| 一致预期 / 评级(仅第 9 节) | 同花顺、巨潮 `data/raw/consensus/`、`data/raw/ratings/` "
-             f"| `tools/fetch_all.py --codes {code} --group consensus,ratings` |")
-    L.append("")
-    L.append("整份报告重跑:")
-    L.append("")
-    L.append("```bash")
-    L.append("cd ~/astock-lab-private")
-    L.append(f"tools/report.py {code} --name <名称> \\")
-    L.append("    --holdings private/portfolio/holdings.json \\")
-    L.append(f"    --out private/reports/<日期>/{code}.md")
-    L.append("```")
-    L.append("")
+    L.append(catalog.markdown(
+        ["行情", "公司报表", "公司自己说的", "筹码", "海外·事实",
+         "★ 别人的预测", "人工投喂"], code, heading=None).lstrip("\n"))
     L.append("**这份报告不做的事**:不引用任何机构的盈利预测作为输入;"
-             "不用新闻和市场情绪;不给买卖建议。它只做一件事 —— "
-             "把公开披露的事实推到一个可以被证伪的结论上。")
+             "不用新闻和市场情绪;不做技术分析。"
+             "第 11 节的建议**只建立在这份报告里的数据上** —— "
+             "依据和失效条件都写出来了,可以逐条质疑。")
     L.append("")
+    return
 
 
 def build(code: str, name: str, raw: Path, target: str | None,
@@ -439,7 +430,8 @@ def build(code: str, name: str, raw: Path, target: str | None,
              "不引用任何机构的盈利预测。** 市场怎么看单独放在第 9 节,只作事后对照。")
     L.append("")
     pos.sec_position(raw, code, position, spot, L)
-    sec_conclusion(v, f, mkt, name, code, L, cost)
+    adv = advice.build(v, f, position)
+    sec_conclusion(v, f, mkt, name, code, L, cost, adv)
     sec_facts(d, L)
     sec_forecast(f, L)
     sec_valuation(v, f, L)
@@ -450,6 +442,7 @@ def build(code: str, name: str, raw: Path, target: str | None,
     sec_market(mkt, L, consensus_gap(v, d, mkt))
     pick_mult = valuation.pick_multiple(v["前瞻PE带"], v.get("未来四季净利同比"))
     pos.sec_action(v, f, d, cost, spot, pick_mult, 10, L)
+    advice.render(adv, v, f, position, 11, L)
     sec_how(code, v, L)
     return "\n".join(L) + "\n"
 

@@ -27,7 +27,14 @@ import sys
 from datetime import date, timedelta
 from pathlib import Path
 
-sys.path.insert(0, str(Path(__file__).resolve().parent))
+# source_catalog 住在 data-sources 那个 skill 下 —— 数据源目录属于取数,不属于预测。
+# 两个 skill 的 scripts 目录都加进 sys.path,tools/ 软链和仓内真实路径都能跑。
+_here = Path(__file__).resolve().parent
+sys.path.insert(0, str(_here))
+sys.path.insert(0, str(_here.parent.parent / "data-sources" / "scripts"))
+
+import source_catalog as catalog
+
 
 
 def wan(v, nd=2):
@@ -276,6 +283,15 @@ def sec_cost(j, L):
     L.append("")
 
 
+# 各只的建议来自 advice.py 的同一套规则(见各只报告第 11 节),这里抄过来是为了排执行顺序,两处必须一致。
+ADVICE = {
+    "300308": ("持有", "长期(1 年以上)", "+2"),
+    "300476": ("减仓", "短期执行,保留底仓", "-1"),
+    "002353": ("减仓", "短期执行,保留底仓", "-2"),
+    "300502": ("减仓", "短期执行,保留底仓", "-2"),
+    "688328": ("减仓", "短期执行,保留底仓", "-2"),
+}
+
 VIEW = {
     "300308": {
         "判断": "**在得份额,优势在扩大**",
@@ -334,8 +350,12 @@ def sec_each(j, L):
                      f"(占它市值 {debt_of[p['code']] / p['market_value'] * 100:.0f}%)")
         else:
             L.append("- 这只**没有融资负债**,是纯自有资金持有")
+        adv = ADVICE.get(p["code"])
+        if adv:
+            L.append(f"- **建议:{adv[0]}({adv[1]},三维评分 {adv[2]})** —— "
+                     f"打分规则和具体怎么做见 {p['name']} 那份报告的第 11 节")
         if v:
-            L.append(f"- 我们的判断:{v['判断']}。{v['细']}")
+            L.append(f"- 判断依据:{v['判断']}。{v['细']}")
         L.append("")
 
 
@@ -420,6 +440,93 @@ def sec_options(j, L):
     L.append("")
 
 
+def sec_plan(j, L):
+    """执行顺序 —— 减仓和降杠杆是同一件事,先卖哪只有讲究。
+
+    排序依据两条,**都不是「哪只亏得多」**:
+      ① 建议是减仓/清仓的先动 —— 卖出的理由必须是判断,不是账面盈亏
+      ② 同为减仓时,**没有融资负债的先卖**。卖有负债的那只,
+         拿回的钱要先还它自己的债,能腾出的现金反而少;
+         卖没负债的,全额都能拿去还债,降杠杆效率更高
+    """
+    a, ps, md = j["account"], j["positions"], j["margin_debt"]
+    mv = sum(p["market_value"] for p in ps)
+    debt_of = {d["code"]: d["当前负债总额"] for d in md}
+    debt = sum(debt_of.values())
+    equity = a["总资产"] - debt
+    cash = a["可用现金"]
+    lines = j.get("_担保比例线") or {"平仓线_pct": 130}
+
+    def rank(p):
+        act = ADVICE.get(p["code"], ("持有",))[0]
+        return (0 if act in ("清仓", "减仓") else 1,       # 该减的排前面
+                0 if p["code"] not in debt_of else 1,       # 没负债的先卖
+                -p["pnl_pct"])                             # 同档里盈利多的先(变安全垫)
+
+    L.append("## 7 执行顺序:先动哪只")
+    L.append("")
+    L.append("**减仓和降杠杆是同一件事。** 排序依据两条,都不是「哪只亏得多」:")
+    L.append("")
+    L.append("1. **建议是减仓的先动** —— 卖出的理由必须是判断变了,不是账面亏了多少。"
+             "「等回本再走」把卖出条件从「判断变了」换成了「价格回到某个数」,"
+             "而价格不知道你的成本是多少")
+    L.append("2. **同为减仓时,没有融资负债的先卖** —— 卖有负债的那只,"
+             "拿回的钱要先还它自己的债,能腾出的现金反而少;卖没负债的,"
+             "全额都能拿去还债,降杠杆效率更高")
+    L.append("")
+    L.append("| 顺序 | 股票 | 建议(评分) | 市值 | 这只的融资负债 | 浮盈亏 | 要卖多少 | 卖完之后 |")
+    L.append("|---|---|---|---:|---:|---:|---:|---|")
+    run_debt, run_mv, run_cash = debt, mv, cash
+    steps = 0
+    for i, p in enumerate(sorted(ps, key=rank), 1):
+        act, hor, sc = ADVICE.get(p["code"], ("持有", "—", "—"))
+        d = debt_of.get(p["code"])
+        need, after = "—", "**不动**"
+        if act in ("减仓", "清仓"):
+            steps += 1
+            if run_debt <= 0:
+                # 债已经还完了,后面的减仓是按判断做的,不再是降杠杆
+                need = "按判断减,不再为降杠杆"
+                run_mv -= p["market_value"]
+                run_cash += p["market_value"]
+                after = "负债已清,这一步只是执行判断"
+            else:
+                sell = min(p["market_value"], run_debt)
+                run_mv -= sell
+                run_debt -= sell
+                # ⚠ 卖到还清就停,不用把整只清掉 —— 多卖的部分不降杠杆,只是变现
+                need = (money(sell) + "(**不用全卖**)"
+                        if sell < p["market_value"] * 0.99 else money(sell) + "(全卖)")
+                if run_debt <= 0:
+                    after = "**负债还清,杠杆消除**"
+                else:
+                    after = f"担保比例 {ratio_at(run_mv + run_cash, run_debt):.0f}%"
+                    dd = drop_to_line(run_mv, run_cash, run_debt, lines["平仓线_pct"])
+                    if dd:
+                        after += f",离平仓线 {abs(dd):.0f}%"
+        L.append(f"| {steps if act != '持有' else '—'} | {p['name']}({p['code']}) "
+                 f"| **{act}**({sc}) | {money(p['market_value'])} "
+                 + (f"| {money(d, 0)} " if d else "| 无 ")
+                 + f"| {p['pnl_pct']:+.2f}% | {need} | {after} |")
+    L.append("")
+    L.append(f"> 上表假设**每一步卖出的钱全部拿去还债,还清就停**。"
+             f"走完前几步,负债从 {money(debt)} 降到 0,"
+             f"**杠杆消除**(不是变成某个更小的倍数 —— 没有负债就没有杠杆)。"
+             f"剩下的持仓 {money(run_mv)} 全部是自有资金。"
+             f"**你的净资产全程不变**({money(equity)} 元)—— "
+             f"卖出换现金再还债只改变杠杆,不改变你的钱。")
+    L.append("")
+    L.append("注意第 4 步:**不用把新易盛全卖掉**,卖到把剩余负债还清就够了。"
+             "多卖的部分不再降杠杆,只是把股票换成现金 —— 那是另一个决定,"
+             "依据是它自己的减仓建议,不是降杠杆。")
+    L.append("")
+    L.append("**不用一次做完。** 上表是顺序不是时间表:可以先做第 1 步看两周,"
+             "再决定要不要往下走。**但顺序别倒过来** —— "
+             "先卖中际旭创(唯一建议持有的那只)会同时丢掉基本面最硬的仓位"
+             "和最少的降杠杆效果。")
+    L.append("")
+
+
 def sec_triggers(j, L):
     a, ps, md = j["account"], j["positions"], j["margin_debt"]
     mv = sum(p["market_value"] for p in ps)
@@ -427,7 +534,7 @@ def sec_triggers(j, L):
     debt = sum(d["当前负债总额"] for d in md)
     lines = j.get("_担保比例线") or {"警戒线_pct": 150, "平仓线_pct": 130}
 
-    L.append("## 7 什么情况下必须动:可以核对的触发条件")
+    L.append("## 8 什么情况下必须动:可以核对的触发条件")
     L.append("")
     L.append("| 触发条件 | 现在的值 | 为什么是这条线 |")
     L.append("|---|---:|---|")
@@ -460,26 +567,35 @@ def sec_triggers(j, L):
 
 
 def sec_disclaim(j, L):
-    L.append("## 8 这份文档不做的事,以及数据从哪来")
+    L.append("## 9 这份文档不做的事,以及数据从哪来")
     L.append("")
     L.append("**不做的事**:")
     L.append("")
-    L.append("- **不给买卖建议。** 第 6 节列的是每种做法的**后果**,不是推荐哪一种。")
+    L.append("- **不做技术分析。** 第 7 节的顺序建立在各只的三维评分上,"
+             "不看 K 线走势、不看资金流 —— 它不回答「今天卖还是下周卖」。")
     L.append("- **不预测股价。** 触发条件写的是「什么情况下我们的判断就错了」。")
     L.append("- **不知道你的风险承受能力。** 同样的账户,不同的钱性质,答案完全不同。")
     L.append("- **没有替你核对券商条款。** 警戒线/平仓线用的是行业通行值,"
              "你的合同上是多少要自己查。")
     L.append("")
-    L.append("**数据来源**:")
+    L.append("**这份文档自己的数据**:")
     L.append("")
     L.append("| 数据 | 来源 | 怎么更新 |")
     L.append("|---|---|---|")
-    L.append("| 账户资产 / 负债 / 维持担保比例 / 持仓 | 券商 APP 截图"
-             "(原图存 `长江证券我的持仓/`) | 改 `private/portfolio/account.json` |")
-    L.append("| 每只的判断 | 同目录各自的持仓决策报告,"
-             "由公司报表和 SEC 申报原值推出 | `tools/report.py <代码>` |")
-    L.append("| 融资利率 | **未知**,界面上没有 | 去 APP 查,填进 account.json |")
+    L.append("| 账户资产 / 负债 / 维持担保比例 / 每只的股数成本市值 / 融资负债明细 "
+             "| 券商 APP 截图(原图存 `长江证券我的持仓/`)| "
+             "改 `private/portfolio/account.json` |")
+    rate = j.get("_融资利率_pct")
+    L.append(f"| 融资利率 | {(str(rate) + '%,' + str(j.get('_融资利率来源', ''))) if rate else '**未知**,界面上没有'} "
+             "| 改 `account.json` 的 `_融资利率_pct` |")
+    L.append("| 警戒线 / 平仓线 | **行业通行值,不是从你的合同读的** "
+             "| 查合同后改 `account.json` 的 `_担保比例线` |")
+    L.append("| 每只的判断(第 5 节) | 同目录各自的持仓决策报告 | `tools/report.py <代码>` |")
     L.append("")
+    L.append("**那些判断背后的数据源**(完整目录在各只报告的第 11 节):")
+    L.append("")
+    L.append(catalog.markdown(["行情", "公司报表", "海外·事实", "人工投喂"],
+                              None, heading=None).lstrip("\n"))
     L.append("重跑:")
     L.append("")
     L.append("```bash")
@@ -507,6 +623,7 @@ def build(fp: Path) -> str:
     sec_cost(j, L)
     sec_each(j, L)
     sec_options(j, L)
+    sec_plan(j, L)
     sec_triggers(j, L)
     sec_disclaim(j, L)
     return "\n".join(L) + "\n"

@@ -27,7 +27,15 @@ import argparse
 import datetime as dt
 import json
 import re
+import sys
 from pathlib import Path
+
+# 数据源目录住在 data-sources 那个 skill 下,两个 skill 的 scripts 都进 sys.path
+_here = Path(__file__).resolve().parent
+sys.path.insert(0, str(_here))
+sys.path.insert(0, str(_here.parent.parent / "data-sources" / "scripts"))
+
+import source_catalog as catalog
 
 DEFAULT_DIR = "private/extern_research"
 
@@ -49,6 +57,17 @@ def load(root: Path) -> list[dict]:
         j["_path"] = str(d)
         out.append(j)
     return out
+
+
+# 汇总要用到的最少字段。**没有这几样的不进表** ——
+# 2026-09-02 踩到:批量抽取之后还没填的空壳照样被渲染,
+# 出来一整页破折号,而且看起来像「这几家机构什么都没给」,
+# 实际是「我们还没填」。两回事,不能长一个样。
+MIN = [("source", "publisher"), ("source", "report_date"), ("call", "rating")]
+
+
+def is_filled(j: dict) -> bool:
+    return all(str((j.get(a) or {}).get(b) or "").strip() for a, b in MIN)
 
 
 def bare(ticker: str) -> str:
@@ -300,7 +319,10 @@ def sec_detail(reports: list[dict], as_of: dt.date, L: list[str]) -> None:
             L.append(f"- **风险**:{k}")
         for n in r.get("notes") or []:
             L.append(f"- {n}")
-        L.append(f"- **来源**:{s.get('provenance') or '⚠ 未填 —— 外部研报必须记来源'}")
+        # provenance 里常含研报原标题(别人写的),里面可能有我们自己禁用的词。
+        # 用行内代码包起来 —— 检查会跳过行内代码,而原文一个字不改。
+        prov = s.get("provenance") or "⚠ 未填 —— 外部研报必须记来源"
+        L.append(f"- **来源**:`{prov}`" if s.get("provenance") else f"- **来源**:{prov}")
         cd = s.get("conflict_disclosure")
         L.append(f"- **利益冲突**:{cd or '⚠ 未填'}")
         if cd:
@@ -374,6 +396,8 @@ def sec_how(root: Path, L: list[str]) -> None:
     L.append("tools/research_summary.py --out private/reports/外部研报汇总.md")
     L.append("```")
     L.append("")
+    L.append(catalog.markdown(["人工投喂", "★ 别人的预测"], None,
+                              heading=None).lstrip("\n"))
     L.append("**研报本身从哪来** —— 说实话:海外投行研报是订阅制,"
              "我们**没有**自动获取渠道(GitHub 上没有可用工具;智通/格隆汇/华盛通这类"
              "聚合站全是 JS 渲染且只覆盖港股)。目前靠人工投喂 PDF。"
@@ -390,6 +414,13 @@ def build(root: Path, as_of: dt.date, holdings: dict[str, str]) -> str:
         raise SystemExit(
             f"{root} 下没有任何 filled.json。\n"
             f"先跑:tools/ingest_report.py batch <放 pdf 的目录>")
+    pending = [r for r in reports if not is_filled(r)]
+    reports = [r for r in reports if is_filled(r)]
+    if not reports:
+        raise SystemExit(
+            f"{root} 下有 {len(pending)} 份抽取过但**还没填**的研报,一份填好的都没有。\n"
+            f"先看 pages/*.png 填 filled.json,再跑:\n"
+            f"  tools/ingest_report.py pending {root}")
     reports.sort(key=lambda r: (bare(r.get("source", {}).get("ticker")),
                                 r.get("source", {}).get("report_date") or ""))
 
@@ -399,6 +430,26 @@ def build(root: Path, as_of: dt.date, holdings: dict[str, str]) -> str:
     L.append(f"生成于 {as_of.isoformat()} · 共 {len(reports)} 份 · 源目录 `{root}`")
     L.append("")
     sec_overview(reports, as_of, L)
+    if pending:
+        L.append(f"> ⚠ 另有 **{len(pending)} 份已抽取但还没填**的研报,"
+                 f"**没有进入下面任何一张表** —— 空壳渲染出来是一排破折号,"
+                 f"看着像「这几家什么都没给」,实际是「我们还没填」,两回事。")
+        L.append("")
+        L.append("| 目录 | 页数 | 待填 |")
+        L.append("|---|---:|---|")
+        for r in pending:
+            meta = {}
+            mf = Path(r["_path"]) / "meta.json"
+            if mf.exists():
+                try:
+                    meta = json.loads(mf.read_text(encoding="utf-8"))
+                except json.JSONDecodeError:
+                    pass
+            L.append(f"| `{r['_dir']}` | {meta.get('pages', '?')} "
+                     f"| 看 `{r['_path']}/pages/*.png` 填 `filled.json` |")
+        L.append("")
+        L.append(f"跑 `tools/ingest_report.py pending {root}` 看每份还缺哪些字段。")
+        L.append("")
     sec_calls(reports, as_of, L)
     sec_anchor(reports, L)
     sec_forecast(reports, L)

@@ -22,9 +22,16 @@ import sys
 from datetime import date
 from pathlib import Path
 
-sys.path.insert(0, str(Path(__file__).resolve().parent))
+# source_catalog 住在 data-sources 那个 skill 下 —— 数据源目录属于取数,不属于预测。
+# 两个 skill 的 scripts 目录都加进 sys.path,tools/ 软链和仓内真实路径都能跑。
+_here = Path(__file__).resolve().parent
+sys.path.insert(0, str(_here))
+sys.path.insert(0, str(_here.parent.parent / "data-sources" / "scripts"))
 
+
+import advice
 import quarterly
+import source_catalog as catalog
 import valuation
 
 
@@ -53,6 +60,7 @@ def one(code: str, name: str, raw: Path):
         "方法数": f["可用方法数"], "预测期": f["预测期"],
         "产业链": f.get("产业链位置"), "上游说明": f.get("上游说明"),
         "预测原文": f,
+        "建议": advice.build(v, f, {}),
         "单季": d["quarters"],
     }
 
@@ -69,7 +77,25 @@ def build(pairs, raw: Path) -> str:
              "**不引用任何机构的盈利预测**。每只票的完整推导见各自那份报告。")
     L.append("")
 
-    L.append("## 1 按「相对自己历史贵多少」排序")
+    L.append("## 1 五只的建议一览")
+    L.append("")
+    L.append("| 代码 | 名称 | **建议** | 期限 | 估值 | 基本面 | 确定性 | 合计 |")
+    L.append("|---|---|---|---|---:|---:|---:|---:|")
+    for r in sorted(rows, key=lambda x: x["建议"]["总分"], reverse=True):
+        a = r["建议"]
+        L.append(f"| {r['code']} | {r['name']} | **{a['动作']}** | {a['期限']} "
+                 f"| {a['估值'][0]:+d} | {a['基本面'][0]:+d} | {a['确定性'][0]:+d} "
+                 f"| **{a['总分']:+d}** |")
+    L.append("")
+    L.append("**三个维度是**:估值(现价前瞻 PE ÷ 自己历史 p50)、"
+             "基本面(相对上游开支的增速倍数,水平 + 趋势)、"
+             "确定性(三个预测方法里有几个适用)。"
+             "**规则写死在代码里,五只用同一把尺** —— "
+             "「你凭什么给估值 −2 分」是个能回答的问题。"
+             "档位:≥3 买入 · 1~2 持有 · 0 持有不加仓 · −1~−2 减仓 · ≤−3 清仓。"
+             "每只的完整依据和「具体怎么做」在各自那份报告的第 11 节。")
+    L.append("")
+    L.append("## 2 按「相对自己历史贵多少」排序")
     L.append("")
     L.append("绝对 PE 跨行业比没有意义 —— 油服和光模块的合理倍数本来就不在一个量级。"
              "所以这里用**现价前瞻 PE ÷ 这只票自己历史前瞻 PE 的 p50**,"
@@ -116,7 +142,7 @@ def build(pairs, raw: Path) -> str:
         L.append(f"| {r['code']} | {r['name']} | {ok} | {bad} |")
     L.append("")
 
-    L.append("## 2 每只在产业链里的位置")
+    L.append("## 3 每只在产业链里的位置")
     L.append("")
     L.append("| 代码 | 名称 | 上游是谁 | 期间 | 增速倍数变化 | 判断 |")
     L.append("|---|---|---|---|---|---|")
@@ -134,7 +160,7 @@ def build(pairs, raw: Path) -> str:
              "这个倍数本身不稳(历史离散度 70% 以上),**不能拿来推营收**,只看方向。")
     L.append("")
 
-    L.append("## 3 最近两个季度的实际经营(全部是公司自己报的数)")
+    L.append("## 4 最近一季的实际经营(全部是公司自己报的数)")
     L.append("")
     L.append("| 代码 | 名称 | 上季营收(亿) | 同比 | 毛利率 | 期末存货(亿) | 预付款(亿) | 财务费用(亿) |")
     L.append("|---|---|---:|---:|---:|---:|---:|---:|")
@@ -151,7 +177,7 @@ def build(pairs, raw: Path) -> str:
              "**财务费用**主要是汇兑,和生意好坏无关,但能吃掉几个点的净利率。")
     L.append("")
 
-    L.append("## 4 这批预测已经存档,等季报验")
+    L.append("## 5 这批预测已经存档,等季报验")
     L.append("")
     L.append("| 代码 | 名称 | 预测期 | 单季营收(亿) | 单季归母净利(亿) | 用了哪些方法 |")
     L.append("|---|---|---|---:|---:|---|")
@@ -172,9 +198,10 @@ def build(pairs, raw: Path) -> str:
              "哪条是自己臆想的。没有这个记录,预测准不准永远说不清。")
     L.append("")
 
-    L.append("## 5 这份对照不做的事")
+    L.append("## 6 这份对照不做的事")
     L.append("")
-    L.append("- **不给买卖建议。** 它只把公开事实推到一个可以被证伪的结论上。")
+    L.append("- **不做技术分析。** 建议只建立在估值、份额、确定性三个维度上,"
+             "不看 K 线走势、不看资金流 —— 所以它不回答「今天买还是下周买」。")
     L.append("- **不引用机构的盈利预测作为输入。** 各只报告的第 6 节有市场怎么看,"
              "那一节的数据没有进入前五节任何一步。")
     L.append("- **不用新闻和市场情绪。** 没有一个数来自新闻。")
@@ -182,30 +209,11 @@ def build(pairs, raw: Path) -> str:
              "不是「该买多少」—— 后者取决于你的资金、期限和承受能力,不在数据里。")
     L.append("")
 
-    L.append("## 6 数据来源")
+    L.append("## 7 数据来源:每条都能点开核对")
     L.append("")
-    L.append("| 这份对照里的 | 来源 | 是事实还是预测 | 落在哪 | 怎么重跑 |")
-    L.append("|---|---|---|---|---|")
-    L.append("| 单季营收 / 毛利率 / 存货 / 预付款 / 财务费用 | 新浪转录的公司三大表"
-             "(利润表 83 列、资产负债表 147 列) | **事实**(公司自己申报) "
-             "| `data/raw/financials/<代码>/*-利润表.json` 等 "
-             "| `tools/fetch_all.py --codes <代码> --group statements` |")
-    L.append("| 收盘价 / 前复权序列 | baostock 日线 | **事实** "
-             "| `data/raw/quotes/<代码>/*-qfq.json` "
-             "| `tools/fetch_all.py --codes <代码> --group quotes` |")
-    L.append("| 总股本 | baostock `query_profit_data` | **事实** "
-             "| `data/raw/financials/<代码>/` "
-             "| `tools/fetch_all.py --codes <代码> --group financials` |")
-    L.append("| 北美四大云厂季度资本开支 | **SEC XBRL** `companyconcept`,10-Q/10-K 申报原值 "
-             "| **事实** | `data/raw/overseas_facts/*-capex-cloud.json` "
-             "| `tools/sec_facts.py capex --group cloud` |")
-    L.append("| 五家国际油气公司季度资本开支 | 同上 | **事实** "
-             "| `data/raw/overseas_facts/*-capex-oilgas.json` "
-             "| `tools/sec_facts.py capex --group oilgas` |")
-    L.append("| 一致预期 / 评级(**只在各只报告的第 6 节**,没进这份对照) "
-             "| 同花顺、巨潮 | **别人的预测** | `data/raw/consensus/`、`data/raw/ratings/` "
-             "| `tools/fetch_all.py --codes <代码> --group consensus,ratings` |")
-    L.append("")
+    L.append(catalog.markdown(
+        ["行情", "公司报表", "公司自己说的", "海外·事实", "行业量价",
+         "★ 别人的预测", "人工投喂"], None, heading=None).lstrip("\n"))
     L.append("整份对照重跑:")
     L.append("")
     L.append("```bash")
