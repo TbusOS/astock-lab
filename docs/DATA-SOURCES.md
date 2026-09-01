@@ -80,7 +80,7 @@ tools/data_digest.py --code 300502 --overseas --pdf                  # 出文档
 |---|---|---|---|---|
 | [**新浪实时快照**](https://hq.sinajs.cn/list=sz300502) ⭐ | 同步 | 五档/最新价/成交量 | `tools/astock.py` | ✅ 通 · 有报价 |
 | [**腾讯实时/逐笔**](http://qt.gtimg.cn/q=sz300502) ⭐ | 同步 | 快照 + 逐笔明细 | `tools/astock.py` | ✅ 通 · 有报价 |
-| [**腾讯日线(前复权)**](https://web.ifzq.gtimg.cn/appstock/app/fqkline/get?param=sz300502,day,,,60,qfq) | 滞后 | OHLCV 历史 | `tools/astock.py` | ✅ 通 · 61 根 |
+| [**腾讯日线(前复权)**](https://web.ifzq.gtimg.cn/appstock/app/fqkline/get?param=sz300502,day,,,60,qfq) | 滞后 | OHLCV 历史 | `tools/astock.py` | ✅ 通 · 60 根 |
 | [**baostock 日线+估值**](http://baostock.com/baostock/index.php/A股K线数据) ⭐ | 滞后 | OHLCV + **peTTM/pbMRQ/psTTM**(历史分位的唯一来源) | `baostock query_history_k_data_plus` | ✅ 通 · 22 根,末 peTTM=42.810370 |
 | [**新浪美股日线**](https://finance.sina.com.cn/stock/usstock/) | 领先 | 海外同业股价(市场先反应) | `akshare stock_us_daily` | ✅ 通 · 9387 行 × 6 列 |
 
@@ -96,7 +96,7 @@ tools/data_digest.py --code 300502 --overseas --pdf                  # 出文档
 | [**营运能力 query_operation_data**](http://baostock.com/baostock/index.php/季频财务数据) | 滞后 | 应收周转率/存货周转率 | `baostock query_operation_data` | ✅ 通 · 1 行 ['sz.300502', '2026-08-25', '2026-06-30', '3.483672' |
 | [**业绩预告 query_forecast_report**](http://baostock.com/baostock/index.php/季频盈利能力) | **领先** | 净利预告区间,比正式财报早 2-6 周。无预告本身也是信息(变动在 ±50% 内) | `baostock query_forecast_report` | ✅ 通 · 4 条,最近 2026-07-20 预增 |
 | [**业绩快报 query_performance_express_report**](http://baostock.com/baostock/index.php/业绩快报) | **领先** | 正式财报前的营收/净利快报 | `baostock query_performance_express_report` | ✅ 通 · 2 条 |
-| [**全市场状态 query_all_stock**](http://baostock.com/baostock/index.php/证券代码查询) | 元数据 | **tradeStatus** 1=正常 0=停牌;配 query_stock_basic 的名称含 ST 判风险警示。只能当验证标签,不能当打分输入(事后贴标 = 马后炮 + 回测前视) | `baostock query_all_stock` | ✅ 通 · 7358 只,其中停牌 7 |
+| [**全市场状态 query_all_stock**](http://baostock.com/baostock/index.php/证券代码查询) | 元数据 | **tradeStatus** 1=正常 0=停牌;配 query_stock_basic 的名称含 ST 判风险警示。只能当验证标签,不能当打分输入(事后贴标 = 马后炮 + 回测前视) | `baostock query_all_stock` | ✅ 通 · 7369 只,其中停牌 7 |
 | [**复权因子 query_adjust_factor**](http://baostock.com/baostock/index.php/复权因子) | 元数据 | 回测可复现的前提 —— 目标价/成本价与日线必须在同一复权基准上。2026-09-01 踩过:拿未复权目标价比未复权日线,基准混了(送转系数 1.40) | `baostock query_adjust_factor` | ✅ 通 · 3 次除权除息 |
 | [**行业分类 query_stock_industry**](http://baostock.com/baostock/index.php/行业分类) | 元数据 | 行业中性化 / 同业对照的分组依据 | `baostock query_stock_industry` | ✅ 通 · C39计算机、通信和其他电子设备制造业 |
 | [**交易日历 query_trade_dates**](http://baostock.com/baostock/index.php/交易日查询) | 元数据 | 所有定时任务的前置闸:非交易日直接跳过 | `baostock query_trade_dates` | ✅ 通 · 32 天,其中交易日 22 |
@@ -107,8 +107,8 @@ tools/data_digest.py --code 300502 --overseas --pdf                  # 出文档
 |---|---|---|---|---|
 | [**datacenter-web 主机**](http://datacenter-web.eastmoney.com/api/data/v1/get) ⭐ | — | 报表类数据总入口 | `requests` | ✅ 通 · 有数据 |
 | [**机构调研 RPT_ORG_SURVEYNEW**](https://data.eastmoney.com/jgdy/) | **领先** | 接待机构数 / 会议形式 / 时间 / 接待人。异常时点(周末夜间)+ 家数骤变是信号 | `datacenter-web reportName=RPT_ORG_SURVEYNEW` | ✅ 通 · 共 819 次,最近接待 145 家 |
-| [**股东户数**](https://data.eastmoney.com/gdhs/) | 滞后 | 户数 / 户均持股 / 环比 | `efinance get_latest_holder_number` | ◇ 缺包 · efinance 未安装 |
-| [**全市场季度业绩(基准率底料)**](https://data.eastmoney.com/bbsj/) | 滞后 | 算「起始 ≥N% 增速四季后仍 ≥50%」的外部视角基准率 | `efinance get_all_company_performance` | ◇ 缺包 · efinance 未安装 |
+| [**股东户数**](https://data.eastmoney.com/gdhs/) | 滞后 | 户数 / 户均持股 / 环比 | `efinance get_latest_holder_number` | ❌ FAIL · ValueError: time data '300502' does not match format '%Y |
+| [**全市场季度业绩(基准率底料)**](https://data.eastmoney.com/bbsj/) | 滞后 | 算「起始 ≥N% 增速四季后仍 ≥50%」的外部视角基准率 | `efinance get_all_company_performance` | ❌ FAIL · JSONDecodeError: Expecting value: line 1 column 1 (char  |
 | [**现金流量表(A股 capex)**](https://emweb.securities.eastmoney.com/PC_HSF10/NewFinanceAnalysis/Index?code=SZ000725) | 滞后 | 购建固定资产支付的现金 —— **面板厂(京东方/TCL)capex 就靠这个** | `akshare stock_cash_flow_sheet_by_report_em` | ❌ FAIL · SSLError: HTTPSConnectionPool(host='emweb.securities.eas |
 
 ### 3b 事件面(缺口)
@@ -116,7 +116,7 @@ tools/data_digest.py --code 300502 --overseas --pdf                  # 出文档
 | 数据源(点名字进官方页) | 属性 | 拿到什么 | 怎么拿 | 实测 |
 |---|---|---|---|---|
 | [**上市公司公告**](https://np-anotice-stock.eastmoney.com/api/security/ann) | **领先** | 中标 / 重大合同 / 框架协议 / 订单 —— 对订单驱动的公司(杰瑞、深科达)比财报更直接。**PIT 纪律:只在公告日之后生效** | `东财 np-anotice-stock` | ✅ 通 · 5 条 |
-| [**个股资金流**](https://data.eastmoney.com/zjlx/300502.html) | 同步 | 主力/大单/中单/小单净流入 | `akshare stock_individual_fund_flow` | ✅ 通 · 120 行 × 13 列 |
+| [**个股资金流**](https://data.eastmoney.com/zjlx/300502.html) | 同步 | 主力/大单/中单/小单净流入 | `akshare stock_individual_fund_flow` | ❌ FAIL · ProxyError: HTTPSConnectionPool(host='push2his.eastmoney |
 | [**龙虎榜**](https://data.eastmoney.com/stock/lhb.html) | 同步 | 游资/机构席位买卖 | `akshare stock_lhb_detail_em` | ✅ 通 · 1633 行 × 21 列 |
 
 ### 4 杠杆与解禁
@@ -150,7 +150,7 @@ tools/data_digest.py --code 300502 --overseas --pdf                  # 出文档
 | 数据源(点名字进官方页) | 属性 | 拿到什么 | 怎么拿 | 实测 |
 |---|---|---|---|---|
 | [**新浪外盘期货 油价**](https://hq.sinajs.cn/list=hf_CL,hf_OIL) | **领先** | WTI / 布伦特 | `tools/commodity.py` | ✅ 通 · 有报价 |
-| [**北美钻机数(Baker Hughes 转载)**](https://api.oilpriceapi.com/v1/prices/latest) | **领先** | 作业量的既成事实 —— 油价和 capex 只是意愿,钻机数是已发生 | `tools/rigcount.py` | ✅ 通 · 1,880,322B |
+| [**北美钻机数(Baker Hughes 转载)**](https://api.oilpriceapi.com/v1/prices/latest) | **领先** | 作业量的既成事实 —— 油价和 capex 只是意愿,钻机数是已发生 | `tools/rigcount.py` | ✅ 通 · 1,880,338B |
 | [**人民币中间价(CFETS)**](https://www.chinamoney.com.cn/ags/ms/cm-u-bk-ccpr/CcprHisNew) | 同步 | 出口占比高的公司的汇兑影响。**pageSize ≥ 100 返回 403 是分页超限不是被封** | `skills/astock-quote/scripts/fx.py` | ✅ 通 · 20 条 |
 
 ### 8 宏观
@@ -158,9 +158,9 @@ tools/data_digest.py --code 300502 --overseas --pdf                  # 出文档
 | 数据源(点名字进官方页) | 属性 | 拿到什么 | 怎么拿 | 实测 |
 |---|---|---|---|---|
 | [**中美国债收益率**](https://data.eastmoney.com/cjsj/zmgzsyl.html) | 领先 | 贴现率 —— 高估值成长股的分母 | `akshare bond_zh_us_rate` | ✅ 通 · 22 行 × 13 列 |
-| [**全球指数**](https://quote.eastmoney.com/center/gridlist.html#global_asia) | 同步 | 外围市场温度 | `akshare index_global_spot_em` | ❌ FAIL · SSLError: HTTPSConnectionPool(host='push2.eastmoney.com' |
+| [**全球指数**](https://quote.eastmoney.com/center/gridlist.html#global_asia) | 同步 | 外围市场温度 | `akshare index_global_spot_em` | ❌ FAIL · JSONDecodeError: Expecting value: line 1 column 1 (char  |
 
-> ⭐ = 必需源(缺了做不了基础分析)。本次实测 41 条,通 37 条。
+> ⭐ = 必需源(缺了做不了基础分析)。本次实测 41 条,通 36 条。
 
 ---
 
