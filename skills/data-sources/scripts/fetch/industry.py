@@ -35,6 +35,22 @@ socket.setdefaulttimeout(40)
 
 import requests  # noqa: E402
 
+def get(url, **kw):
+    """网络类抖动重试两次 —— 这几个源在本机时通时不通,一次失败就少一年数据/少七家公司,
+    而清单看起来像「源没了」。2026-09-02 实测:台湾上市接口超时导致只回来 7/14 家。"""
+    import time as _t
+    last = None
+    for i in range(3):
+        try:
+            return requests.get(url, **kw)
+        except Exception as e:
+            last = e
+            if not any(k in type(e).__name__ for k in ("SSL", "Connection", "Proxy", "Timeout", "Read")):
+                raise
+            _t.sleep(1.5 * (i + 1))
+    raise last
+
+
 UA = {"User-Agent": "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 "
                     "(KHTML, like Gecko) Chrome/126 Safari/537.36"}
 TODAY = date.today().isoformat()
@@ -92,7 +108,7 @@ def fetch_taiwan(out: Path):
     rows, srcs = [], []
     for u, mk in TW_APIS:
         try:
-            for x in requests.get(u, headers=UA, timeout=40).json():
+            for x in get(u, headers=UA, timeout=60).json():
                 rows.append({**x, "_市场": mk})
             srcs.append(u)
         except Exception as e:
@@ -129,7 +145,7 @@ def fetch_comtrade(out: Path, hs="851762", years=("2020", "2021", "2022", "2023"
     got, frontier = [], None
     for y in years:
         try:
-            d = requests.get(f"{B}/A/HS", headers=UA, timeout=40, params={
+            d = get(f"{B}/A/HS", headers=UA, timeout=40, params={
                 "reporterCode": "156", "period": y, "cmdCode": hs,
                 "flowCode": "X", "partnerCode": "0"}).json().get("data") or []
             for x in d:
@@ -143,7 +159,7 @@ def fetch_comtrade(out: Path, hs="851762", years=("2020", "2021", "2022", "2023"
         for m in range(1, 13):
             p = f"{y}{m:02d}"
             try:
-                d = requests.get(f"{B}/M/HS", headers=UA, timeout=40, params={
+                d = get(f"{B}/M/HS", headers=UA, timeout=40, params={
                     "reporterCode": "156", "period": p, "cmdCode": hs,
                     "flowCode": "X", "partnerCode": "0"}).json().get("data") or []
             except Exception:
