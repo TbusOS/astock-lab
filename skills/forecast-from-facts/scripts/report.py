@@ -109,14 +109,18 @@ def sec_conclusion(v, f, mkt, name, code, L, cost=None, adv=None):
     if not cost:
         L.append(f"- **现价 {spot['close']:.2f} 元({spot['date']}),市值 {yi(cap, 0)} 亿。**")
     if pe_mid:
-        L.append(f"- 按**我们自己**推的未来四季归母净利 {yi(our['low'])}~{yi(our['high'])} 亿"
-                 f"(中枢 {yi(our['mid'])} 亿),现价对应前瞻 PE **{pe_mid:.1f}x**。")
+        L.append(f"- 按**我们自己**推的 3+1 归母净利 {yi(our['low'])}~{yi(our['high'])} 亿"
+                 f"(中枢 {yi(our['mid'])} 亿),现价对应 **3+1 PE {pe_mid:.1f}x**。")
+        L.append("  **3+1 PE = 市值 ÷(最近三季已披露归母净利 + 下一季归母净利)。**"
+                 "历史带里那个「下一季」是**事后实际**,现价这一格是**我们的预测** —— "
+                 "两边唯一的差别就是最后那一季,前三季两边都是已披露的实际值。"
+                 "两边算的是同一段时间、同一种算法,分位才比得。")
     if band.get("ok") and pe_mid:
         pos = ("**高于历史 p90**" if pe_mid > band["p90"] else
                "在历史 p75~p90 之间" if pe_mid > band["p75"] else
                "在历史 p50~p75 之间" if pe_mid > band["p50"] else
                "在历史 p25~p50 之间" if pe_mid > band["p25"] else "**低于历史 p25**")
-        L.append(f"- 这只票**自己**的历史前瞻 PE 带:p25={band['p25']:.1f}x、"
+        L.append(f"- 这只票**自己**的历史 3+1 PE 带:p25={band['p25']:.1f}x、"
                  f"p50={band['p50']:.1f}x、p75={band['p75']:.1f}x、p90={band['p90']:.1f}x。"
                  f"现价 {pos}。")
     cp = f.get("产业链位置")
@@ -185,7 +189,7 @@ def sec_forecast(f, L):
 
 
 def sec_valuation(v, f, L):
-    L.append("## 5 估值:我们自己算的前瞻 PE 带")
+    L.append("## 5 估值:我们自己算的 3+1 PE 带")
     L.append("")
     L.append("### 5.1 PE 到底是什么(这一步不讲清楚,后面的数就只能被相信)")
     L.append("")
@@ -205,30 +209,51 @@ def sec_valuation(v, f, L):
              "**同一段增长被算了两遍**。单只票的隐含空间能差 45 个百分点,"
              "而数字看着全都合理,方向却系统性偏乐观。")
     L.append("")
+    L.append("同一个错第二天换个样子又犯了一次:**2026-09-02 第一版自建带,"
+             "历史那条带的分母用的是「季度末之后四季」的实际净利(四季全在未来),"
+             "现价那一格的分母却是「最近三季已披露 + 预测一季」** —— 两边差三个季度。"
+             "对增速 100%+ 的票,现价 PE 被系统性抬高,三只 AI 票的估值分因此错了一档"
+             "(中际旭创现价算出 37.3x,而按同样算法做出来的带 p50 是 35.2x,不是 22.7x)。")
+    L.append("")
+    L.append("> **乘数和利润必须算同一段时间** —— 这是这两次错的共同教训。"
+             "所以现在带和现价都用「3+1」:最近三季已披露 + 下一季。"
+             "两边唯一的差别是最后那一季在历史里是实际、在今天是预测。")
+    L.append("")
     L.append("### 5.3 我们怎么算这条带")
     L.append("")
     L.append("对历史上每一个交易日 t:")
     L.append("")
     L.append("```")
-    L.append("市值(t)    = 前复权收盘价(t) × 当前总股本")
-    L.append("前瞻PE(t)  = 市值(t) ÷ Σ(t 之后四个季度的【实际】归母净利)")
+    L.append("市值(t)     = 前复权收盘价(t) × 当前总股本")
+    L.append("3+1 PE(t)   = 市值(t) ÷ ( t 那天最近三季【已披露实际】归母净利")
+    L.append("                          + 它们的下一季【实际】归母净利 )")
     L.append("```")
+    L.append("")
+    L.append("**为什么是 3+1,不是四季全在未来。** 现价那一格的分母永远只能是"
+             "「3 季实际 + 1 季预测」—— 我们没有能力预测四个季度。"
+             "带若做成纯前瞻,它的分母比现价那一格整整往后挪三个季度;"
+             "票增长越快,同一个价格算出的 PE 差得越远,而两个数摆在一起看着都很正常。"
+             "所以带也做成 3+1:**两边唯一的差别就是最后那一季在历史里是实际、"
+             "在今天是我们的预测**,前三季两边都是已披露的实际值。")
     L.append("")
     L.append("两点让它成为**纯事实**:")
     L.append("")
     L.append("1. 用**前复权**价乘当前股本,等于把历史价格换算到今天的股本上。"
              "送转不再制造假的价格跳空 —— 这和「拿未复权目标价去比未复权日线」是同一类坑。")
-    L.append("2. 分母是**事后真实发生**的净利,不是当时任何人的预测。"
-             "所以这条带回答的是:**市场当年为这家公司未来一年的真实利润,实际付了多少倍。**")
+    L.append("2. 分母**四季全是事后真实发生**的净利,不是当时任何人的预测。"
+             "所以这条带回答的是:**市场当年为这家公司这四个季度的真实利润,"
+             "实际付了多少倍。**")
     L.append("")
     b = v["前瞻PE带"]
     if not b.get("ok"):
-        L.append(f"> 这只票的前瞻带算不出来:{b['why']}")
+        L.append(f"> 这只票的 3+1 PE 带算不出来:{b['why']}")
         L.append("")
         return
-    L.append(f"**代价**:最近四个季度算不出来({b['算不了的交易日']} 个交易日被排除)——"
-             f"未来的净利还没发生,分母不存在。**不拿预测去填**,填了这条带就不再是事实。"
-             f"所以带的区间只到 {b['到']}。")
+    L.append(f"**代价**:**最近一个季度算不出来**({b['算不了的交易日']} 个交易日被排除)"
+             f"—— 它的「下一季」还没发生,分母缺一块。**不拿预测去填**,"
+             f"填了这条带就不再是事实。所以带的区间只到 {b['到']}。"
+             f"现价那一格能用预测补,是因为它本来就是我们的预测;"
+             f"往带里补就等于拿预测当历史。")
     L.append("")
     L.append(f"| 样本 | p10 | p25 | p50 | p75 | p90 | 均值 |")
     L.append("|---|---:|---:|---:|---:|---:|---:|")
@@ -243,10 +268,11 @@ def sec_valuation(v, f, L):
     cap = spot["close"] * v["总股本"]
     L.append("### 5.4 现价隐含了什么")
     L.append("")
-    L.append(f"我们预测的未来四季归母净利:**{yi(our['low'])} ~ {yi(our['high'])} 亿**"
-             f"(中枢 {yi(our['mid'])} 亿)。构成:{our['说明']}。")
+    L.append(f"我们的 3+1 归母净利:**{yi(our['low'])} ~ {yi(our['high'])} 亿**"
+             f"(中枢 {yi(our['mid'])} 亿)。构成:{our['说明']}。"
+             f"和上面那条带**算的是同一种东西** —— 差别只在这里的最后一季是预测。")
     L.append("")
-    L.append("| | 净利 | 现价对应前瞻 PE | 在自己历史带的位置 |")
+    L.append("| | 3+1 净利 | 现价对应 3+1 PE | 在自己历史带的位置 |")
     L.append("|---|---:|---:|---|")
     for k, lab in (("high", "乐观"), ("mid", "中枢"), ("low", "谨慎")):
         ni = our[k]
@@ -261,7 +287,7 @@ def sec_valuation(v, f, L):
     L.append("### 5.5 我们的目标价怎么出来的")
     L.append("")
     L.append("```")
-    L.append("目标价 = (我们预测的未来四季净利 ÷ 总股本) × 我们选的前瞻 PE")
+    L.append("目标价 = (我们预测的 3+1 净利 ÷ 总股本) × 我们选的 3+1 PE")
     L.append("```")
     L.append("")
     g = v.get("未来四季净利同比")
@@ -272,7 +298,7 @@ def sec_valuation(v, f, L):
         return
     L.append(f"**选哪一档由增长决定** —— {pick['理由']}")
     L.append("")
-    L.append("| 情景 | 未来四季净利 | 前瞻 PE | 目标价 | 相对现价 |")
+    L.append("| 情景 | 3+1 净利 | 3+1 PE | 目标价 | 相对现价 |")
     L.append("|---|---:|---:|---:|---:|")
     rows = [("谨慎", our["low"], pick["低"]), ("中枢", our["mid"], pick["中"]),
             ("乐观", our["high"], pick["高"])]
@@ -412,7 +438,8 @@ def build(code: str, name: str, raw: Path, target: str | None,
     d = quarterly.build(raw, code, since="2023")
     mkt = market_view(raw, code)
 
-    # 未来四季净利同比 —— 选倍数要用
+    # 3+1 净利相对再往前四季的同比 —— 选倍数要用。
+    # dict 的 key 沿用旧名「未来四季净利同比」,只改用户看得到的文字。
     hist = [r["单季归母净利"] for r in d["quarters"] if r.get("单季归母净利") is not None]
     our = v["我们预测的未来四季净利"]
     if our and len(hist) >= 7:
@@ -437,8 +464,12 @@ def build(code: str, name: str, raw: Path, target: str | None,
     sec_valuation(v, f, L)
     pos.sec_chips(raw, code, 6, L)
     pos.sec_technical(raw, code, cost, spot, 7, L)
+    # ⚠ **同业 ≠ 上游。** 这里借上游的分组键去找同业组,只是因为两者恰好一一对应,
+    #   不是同一件事:SLB/HAL/BKR 是杰瑞的**同行**(第 8 节对照它们),
+    #   而杰瑞的**上游**是三桶油(第 4 节拿它们当分母)。改一边不要顺手改另一边。
+    #   深科达(panel_osat)没有对应的海外同业组 → 传 None,第 8 节会说明原因。
     grp = forecast.UPSTREAM_OF.get(code)
-    pos.sec_peers(raw, {"cloud": "AI算力链-同业", "oilgas": "油气设服"}.get(grp), 8, L)
+    pos.sec_peers(raw, {"cloud": "AI算力链-同业", "oil_cn": "油气设服"}.get(grp), 8, L)
     sec_market(mkt, L, consensus_gap(v, d, mkt))
     pick_mult = valuation.pick_multiple(v["前瞻PE带"], v.get("未来四季净利同比"))
     pos.sec_action(v, f, d, cost, spot, pick_mult, 10, L)

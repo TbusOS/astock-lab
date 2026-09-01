@@ -69,13 +69,24 @@ def load_position(fp: Path | None, code: str) -> dict:
         total_mv = sum(x.get("market_value") or 0 for x in j["positions"])
         debt = next((d["当前负债总额"] for d in (j.get("margin_debt") or [])
                      if d.get("code") == code), None)
+        acct = j.get("account") or {}
         return {"cost": pos.get("cost"), "shares": pos.get("shares"),
                 "market_value": pos.get("market_value"), "pnl": pos.get("pnl"),
                 "weight": (pos["market_value"] / total_mv * 100
                            if total_mv and pos.get("market_value") else None),
                 "margin_debt": debt,
                 "account_type": j.get("_账户类型"),
-                "维持担保比例": (j.get("account") or {}).get("维持担保比例_pct")}
+                "维持担保比例": acct.get("维持担保比例_pct"),
+                # ⚠ **账户级的约束也要给到每只票。** 只给这只票自己的字段,
+                #   报告就只能回答「这家公司值多少钱」,回答不了「你能不能照做」。
+                #   2026-09-02 踩到:中际旭创拿到「买入 / 加仓」,而这个账户的
+                #   可用保证金是 −171,089 —— 加仓根本执行不了。建议本身没错,
+                #   但对着一个不可能执行的动作写「分几笔买」是空话。
+                "账户": {"可用保证金": acct.get("可用保证金"),
+                         "可用现金": acct.get("可用现金"),
+                         "总负债": acct.get("总负债"),
+                         "维持担保比例": acct.get("维持担保比例_pct"),
+                         "账户类型": j.get("_账户类型")}}
     # holdings.json
     h = (j.get("holdings") or {}).get(code) or {}
     return {"cost": h.get("cost"), "shares": h.get("shares")}
@@ -417,7 +428,7 @@ def sec_action(v, f, d, cost, spot, pick_mult, n: int, L) -> None:
         cap = spot["close"] * v["总股本"]
         pe = cap / our["mid"] if our["mid"] else None
         if pe:
-            L.append(f"- **现价前瞻 PE 已经是 {pe:.1f}x,而自己历史 p90 是 {b['p90']:.1f}x** —— "
+            L.append(f"- **现价 3+1 PE 已经是 {pe:.1f}x,而自己历史 p90 是 {b['p90']:.1f}x** —— "
                      + ("**已经在 p90 之上**。这时候增长只要减速,估值和利润会一起往下,"
                         "两头挤。" if pe > b["p90"] else
                         f"再涨 {(b['p90'] / pe - 1) * 100:.0f}% 就到 p90。")

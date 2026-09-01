@@ -33,6 +33,7 @@ _here = Path(__file__).resolve().parent
 sys.path.insert(0, str(_here))
 sys.path.insert(0, str(_here.parent.parent / "data-sources" / "scripts"))
 
+import position_view
 import source_catalog as catalog
 
 
@@ -283,49 +284,72 @@ def sec_cost(j, L):
     L.append("")
 
 
-# 各只的建议来自 advice.py 的同一套规则(见各只报告第 11 节),这里抄过来是为了排执行顺序,两处必须一致。
-ADVICE = {
-    "300308": ("持有", "长期(1 年以上)", "+2"),
-    "300476": ("减仓", "短期执行,保留底仓", "-1"),
-    "002353": ("减仓", "短期执行,保留底仓", "-2"),
-    "300502": ("减仓", "短期执行,保留底仓", "-2"),
-    "688328": ("减仓", "短期执行,保留底仓", "-2"),
-}
-
-VIEW = {
-    "300308": {
-        "判断": "**在得份额,优势在扩大**",
-        "细": "相对北美四大云厂资本开支的增速倍数 2025Q3 → 2026Q2 从 0.87x 升到 2.01x。"
-              "三个预测方法里 **2 个适用**(同比法、环比法),互相印证。现价对应我们算的前瞻 PE 37.3x,"
-              "自己历史 p50 是 22.7x、p90 是 51.2x —— 在 p75~p90 之间,贵但没到极端。",
-    },
-    "300502": {
-        "判断": "**优势在收窄,估值已在自己历史 p90 之上**",
-        "细": "增速倍数从 2.34x 降到 1.11x —— 仍快于行业,但快得没以前多。"
-              "现价前瞻 PE 36.3x,自己历史 p90 是 36.1x,**已经越过去了**。"
-              "而且三个方法里**只有 1 个适用**(同比法;存货法和环比法都因为历史比值太散被判定不适用),区间没有第二个来交叉验证。",
-    },
-    "300476": {
-        "判断": "**在丢份额**",
-        "细": "增速倍数从 1.21x 掉到 0.34x —— 行业在扩,它没跟上。"
-              "现价前瞻 PE 42.3x,高于自己历史 p90(36.8x)。"
-              "但三个方法(存货法、同比法、环比法)**全部适用**,预测本身是这五只里最扎实的。",
-    },
-    "002353": {
-        "判断": "**相对自己历史最贵的一只**",
-        "细": "现价前瞻 PE 48.2x,自己历史 p50 才 14.0x、p90 才 22.2x —— "
-              "**是 p50 的 3.45 倍**,五只里最高。相对油气公司资本开支的增速倍数也在收窄。",
-    },
-    "688328": {
-        "判断": "**唯一盈利的,但估值和确定性都最弱**",
-        "细": "现价前瞻 PE 96.4x,自己历史 p50 是 65.2x。市值只有 76 亿,"
-              "小盘股波动天然大。三个方法里只有 1 个适用(同比法),"
-              "产业链位置**算不了**(它的上游是面板厂和封测厂,我们没有那批数据)。",
-    },
-}
+# ⚠ 这里原来写死了一张 ADVICE 表和一张 VIEW 表:五只的建议、三维评分、
+#   「现价前瞻 PE 37.3x」「自己历史 p50 是 22.7x」这些数字全部是常量。
+#   2026-09-02 改估值算法的时候,那两张表**当场全部过期**,而没有任何东西会报错 ——
+#   文档照样生成、格式照样对,只是每个数都在讲上一版的故事。
+#   现在改成对每只跑一遍和个股报告完全相同的管线
+#   (valuation.build → forecast → advice.build),措辞按数据分支,见 position_view.py。
+#   **两份文档读同一次计算的结果**,所以不可能给出不同的建议。
 
 
-def sec_each(j, L):
+def load_views(codes, raw: Path) -> dict:
+    """对每只跑一遍完整管线。某只算不出来时**不静默跳过** ——
+    跳过的话第 5 节会少一只,而少的那只恰恰是数据有问题的那只。"""
+    out, failed = {}, []
+    for c in codes:
+        try:
+            out[c] = position_view.build(c, raw)
+        except SystemExit as e:
+            failed.append(f"{c}({e})")
+    if failed:
+        print(f"  ⚠ 这几只算不出来,第 5 节会说明:{'、'.join(failed)}")
+    return out
+
+
+def is_sell(view) -> bool:
+    return bool(view) and view["建议"]["动作"].startswith(("减仓", "清仓"))
+
+
+def sell_order(j, views):
+    """按第 7 节那两条规则排出执行顺序,返回 (该减的, 该留的) 两串。
+
+    ⚠ **第 6 节的方案和第 7 节的顺序必须是同一个东西。** 原来第 6 节把
+    A/B/C/D 四个方案的股票代码写死,第 7 节另算一套顺序 —— 今天恰好一致,
+    建议一变就分叉,而且分叉了不报错:两张表各自看着都合理,合起来自相矛盾。
+    """
+    debt_of = {d["code"]: d["当前负债总额"] for d in j["margin_debt"]}
+
+    def rank(p):
+        v = views.get(p["code"])
+        if not v:                                   # 算不出建议的排最后,不动
+            return (2, 1, 0.0)
+        return position_view.order_key(v, p["code"] in debt_of, p["pnl_pct"])
+
+    ordered = sorted(j["positions"], key=rank)
+    return ([p for p in ordered if is_sell(views.get(p["code"]))],
+            [p for p in ordered if not is_sell(views.get(p["code"]))])
+
+
+def why_this_one(p, views, all_ps) -> str:
+    """这一只凭什么排在这个位置 —— **只说能从数据里判断出来的**。
+
+    判断不出来就不写形容词。原来写的是「把三只**非核心**的都清掉」——
+    「非核心」听着像个理由,其实数据里没有这个概念,是凑出来的。
+    """
+    tags = []
+    if p["pnl_pct"] == max(x["pnl_pct"] for x in all_ps):
+        tags.append("浮盈最高" if p["pnl_pct"] > 0 else "浮亏最小")
+    v = views.get(p["code"])
+    scores = [views[x["code"]]["建议"]["总分"] for x in all_ps if x["code"] in views]
+    if v and scores and v["建议"]["总分"] == min(scores):
+        tags.append(f"评分最低 {v['建议']['总分']:+d}")
+    if p["market_value"] == min(x["market_value"] for x in all_ps):
+        tags.append("仓位最小")
+    return "、".join(tags)
+
+
+def sec_each(j, views, L):
     ps = sorted(j["positions"], key=lambda p: -p["market_value"])
     mv = sum(p["market_value"] for p in ps)
     debt_of = {d["code"]: d["当前负债总额"] for d in j["margin_debt"]}
@@ -338,8 +362,16 @@ def sec_each(j, L):
     L.append("提到的「三个方法」是:**存货法**(上季末存货 × 历史比值,看供给侧已花的钱)、**同比法**(去年同期 × 近三季同比,看需求侧增长)、"
              "**环比法**(上季 × 历年同一转换的环比,看季节形状)。每个先自检适不适用,不适用就退出 —— 详细算式见各只报告第 3 节。")
     L.append("")
+    L.append("提到的「**3+1 PE**」是:**市值 ÷(最近三季已披露归母净利 + 下一季归母净利)**。"
+             "历史带里那个「下一季」是**事后实际**,现价那一格是**我们的预测** —— "
+             "两边唯一的差别就是最后那一季,前三季两边都是已披露的实际值。"
+             "两边算的是同一段时间、同一种算法,分位才比得。")
+    L.append("")
+    L.append("> 下面每一只的建议、评分、PE 和带分位,都是**这次跑管线现算的**,"
+             "不是写死在文档里的常量。数据重抓一次,这几段话就跟着变。")
+    L.append("")
     for p in ps:
-        v = VIEW.get(p["code"], {})
+        view = views.get(p["code"])
         L.append(f"### {p['name']}({p['code']})　仓位 {p['market_value'] / mv * 100:.1f}%"
                  f"　浮盈亏 {p['pnl_pct']:+.2f}%")
         L.append("")
@@ -350,16 +382,22 @@ def sec_each(j, L):
                      f"(占它市值 {debt_of[p['code']] / p['market_value'] * 100:.0f}%)")
         else:
             L.append("- 这只**没有融资负债**,是纯自有资金持有")
-        adv = ADVICE.get(p["code"])
-        if adv:
-            L.append(f"- **建议:{adv[0]}({adv[1]},三维评分 {adv[2]})** —— "
-                     f"打分规则和具体怎么做见 {p['name']} 那份报告的第 11 节")
-        if v:
-            L.append(f"- 判断依据:{v['判断']}。{v['细']}")
+        if not view:
+            L.append("- **这只算不出建议** —— 报表数据不全,见文档末尾的数据来源一节。"
+                     "不给一个凑出来的动作:没有依据的建议比没有建议更糟。")
+            L.append("")
+            continue
+        a = view["建议"]
+        L.append(f"- **建议:{a['动作']}({a['期限']},三维评分 {a['总分']:+d} = "
+                 f"估值 {a['估值'][0]:+d} · 基本面 {a['基本面'][0]:+d} · "
+                 f"确定性 {a['确定性'][0]:+d})** —— "
+                 f"打分规则和具体怎么做见 {p['name']} 那份报告的第 11 节")
+        L.append(f"- 判断依据:{position_view.headline(view)}。"
+                 + "".join(position_view.detail(view)))
         L.append("")
 
 
-def sec_options(j, L):
+def sec_options(j, views, L):
     a, ps, md = j["account"], j["positions"], j["margin_debt"]
     mv = sum(p["market_value"] for p in ps)
     cash = a["可用现金"]
@@ -390,13 +428,20 @@ def sec_options(j, L):
              f"(始终是 {money(equity)} 元)。变的只有杠杆和离强平的距离。")
     L.append("")
 
-    plans = [
-        ("A 什么都不动", [], "维持现状"),
-        ("B 卖深科达还债", ["688328"], "卖唯一盈利的那只,把浮盈变实盈,换安全垫"),
-        ("C 卖深科达 + 杰瑞", ["688328", "002353"], "再加上仓位最小、我们判断最贵的那只"),
-        ("D 卖深科达 + 杰瑞 + 胜宏", ["688328", "002353", "300476"],
-         "把三只非核心的都清掉,负债剩一小半"),
-    ]
+    # ⚠ 这几个方案以前把股票代码写死(`["688328", "002353", "300476"]`)。
+    #   建议一变就和第 7 节的执行顺序分叉,而且不报错。现在从**同一个** sell_order
+    #   取前缀:方案 B = 第 1 步,C = 前 2 步,D = 前 3 步 …… 一一对应。
+    to_sell, _kept = sell_order(j, views)
+    plans = [("A 什么都不动", [], "维持现状")]
+    for i, p in enumerate(to_sell, 1):
+        codes = [x["code"] for x in to_sell[:i]]
+        names = " + ".join(x["name"] for x in to_sell[:i])
+        tag = why_this_one(p, views, ps)
+        plans.append((f"{chr(ord('A') + i)} 卖{names}",
+                      codes,
+                      f"在上一档基础上加卖{p['name']}" + (f"({tag})" if tag else "")
+                      if i > 1 else
+                      f"先卖{p['name']}" + (f"({tag})" if tag else "")))
     rate = (j.get("_融资利率_pct") or 6.0) / 100
     L.append(f"| 方案 | 卖出金额 | 还债后负债 | 维持担保比例 | 杠杆 | 离平仓线还要跌 | "
              f"年省利息(按{rate * 100:.0f}%) |")
@@ -440,7 +485,7 @@ def sec_options(j, L):
     L.append("")
 
 
-def sec_plan(j, L):
+def sec_plan(j, views, L):
     """执行顺序 —— 减仓和降杠杆是同一件事,先卖哪只有讲究。
 
     排序依据两条,**都不是「哪只亏得多」**:
@@ -457,11 +502,8 @@ def sec_plan(j, L):
     cash = a["可用现金"]
     lines = j.get("_担保比例线") or {"平仓线_pct": 130}
 
-    def rank(p):
-        act = ADVICE.get(p["code"], ("持有",))[0]
-        return (0 if act in ("清仓", "减仓") else 1,       # 该减的排前面
-                0 if p["code"] not in debt_of else 1,       # 没负债的先卖
-                -p["pnl_pct"])                             # 同档里盈利多的先(变安全垫)
+    to_sell, kept = sell_order(j, views)
+    ordered = to_sell + kept
 
     L.append("## 7 执行顺序:先动哪只")
     L.append("")
@@ -478,11 +520,17 @@ def sec_plan(j, L):
     L.append("|---|---|---|---:|---:|---:|---:|---|")
     run_debt, run_mv, run_cash = debt, mv, cash
     steps = 0
-    for i, p in enumerate(sorted(ps, key=rank), 1):
-        act, hor, sc = ADVICE.get(p["code"], ("持有", "—", "—"))
+    partial, keep_first = None, None          # 记「第几步不用全卖」「第一只不该动的是谁」
+    for i, p in enumerate(ordered, 1):
+        v = views.get(p["code"])
+        if v:
+            act = v["建议"]["动作"]
+            sc = f"{v['建议']['总分']:+d}"
+        else:
+            act, sc = "算不出", "—"
         d = debt_of.get(p["code"])
         need, after = "—", "**不动**"
-        if act in ("减仓", "清仓"):
+        if act.startswith(("减仓", "清仓")):
             steps += 1
             if run_debt <= 0:
                 # 债已经还完了,后面的减仓是按判断做的,不再是降杠杆
@@ -495,8 +543,12 @@ def sec_plan(j, L):
                 run_mv -= sell
                 run_debt -= sell
                 # ⚠ 卖到还清就停,不用把整只清掉 —— 多卖的部分不降杠杆,只是变现
-                need = (money(sell) + "(**不用全卖**)"
-                        if sell < p["market_value"] * 0.99 else money(sell) + "(全卖)")
+                if sell < p["market_value"] * 0.99:
+                    need = money(sell) + "(**不用全卖**)"
+                    if partial is None:
+                        partial = (steps, p["name"])
+                else:
+                    need = money(sell) + "(全卖)"
                 if run_debt <= 0:
                     after = "**负债还清,杠杆消除**"
                 else:
@@ -504,30 +556,76 @@ def sec_plan(j, L):
                     dd = drop_to_line(run_mv, run_cash, run_debt, lines["平仓线_pct"])
                     if dd:
                         after += f",离平仓线 {abs(dd):.0f}%"
-        L.append(f"| {steps if act != '持有' else '—'} | {p['name']}({p['code']}) "
+        if not act.startswith(("减仓", "清仓")) and v:
+            # ⚠ 不能拿「排序里第一只不减的」当「最不该动的」—— 排序键第三位是浮盈亏,
+            #   和基本面没有关系。要按评分取,评分才是「该不该留」的依据。
+            if keep_first is None or v["建议"]["总分"] > keep_first[2]:
+                keep_first = (p["name"], act, v["建议"]["总分"],
+                              p["code"] in debt_of)
+        L.append(f"| {steps if act.startswith(('减仓', '清仓')) else '—'} "
+                 f"| {p['name']}({p['code']}) "
                  f"| **{act}**({sc}) | {money(p['market_value'])} "
                  + (f"| {money(d, 0)} " if d else "| 无 ")
                  + f"| {p['pnl_pct']:+.2f}% | {need} | {after} |")
     L.append("")
-    L.append(f"> 上表假设**每一步卖出的钱全部拿去还债,还清就停**。"
-             f"走完前几步,负债从 {money(debt)} 降到 0,"
-             f"**杠杆消除**(不是变成某个更小的倍数 —— 没有负债就没有杠杆)。"
-             f"剩下的持仓 {money(run_mv)} 全部是自有资金。"
-             f"**你的净资产全程不变**({money(equity)} 元)—— "
-             f"卖出换现金再还债只改变杠杆,不改变你的钱。")
+    # ⚠ 这段以前写死「负债降到 0、杠杆消除、剩下的全是自有资金」。
+    #   那是上一版建议下的结果 —— 那时新易盛和中际旭创都是减仓,一路卖下去债确实清得完。
+    #   现在这两只一个持有一个买入,顺序到第 3 步就停了,债根本没还完,
+    #   而那句话还在说「降到 0」。**收尾必须实算**,不能是一句听着漂亮的总结。
+    if run_debt <= 0:
+        L.append(f"> 上表假设**每一步卖出的钱全部拿去还债,还清就停**。"
+                 f"走完这 {steps} 步,负债从 {money(debt)} 降到 0,"
+                 f"**杠杆消除**(不是变成某个更小的倍数 —— 没有负债就没有杠杆)。"
+                 f"剩下的持仓 {money(run_mv)} 全部是自有资金。"
+                 f"**你的净资产全程不变**({money(equity)} 元)—— "
+                 f"卖出换现金再还债只改变杠杆,不改变你的钱。")
+    else:
+        sold = mv - run_mv
+        new_lev = run_mv / equity if equity else None
+        dd = drop_to_line(run_mv, run_cash, run_debt, lines["平仓线_pct"])
+        keep_txt = "、".join(
+            f"{p['name']}(建议「{views[p['code']]['建议']['动作']}」)"
+            for p in kept if p["code"] in views) or "剩下几只"
+        L.append(f"> 上表假设**每一步卖出的钱全部拿去还债**。走完这 {steps} 步共卖出 "
+                 f"{money(sold)},负债从 {money(debt)} 降到 **{money(run_debt)}**,"
+                 f"杠杆从 {mv / equity:.2f}x 降到 **{new_lev:.2f}x**"
+                 + (f",离平仓线从 "
+                    f"{abs(drop_to_line(mv, cash, debt, lines['平仓线_pct'])):.0f}% "
+                    f"拉开到 **{abs(dd):.0f}%**" if dd else "")
+                 + f"。**你的净资产全程不变**({money(equity)} 元)—— "
+                 f"卖出换现金再还债只改变杠杆,不改变你的钱。")
+        L.append("")
+        L.append(f"> **债没有清零,还差 {money(run_debt)}。** 这套顺序到这里停,"
+                 f"是因为剩下的 {keep_txt} —— 它们不在减仓名单里。"
+                 f"继续降杠杆就得卖掉它们,那等于**违背它们自己的建议**,"
+                 f"是另一个决定,依据也不同:"
+                 f"卖它们的理由只能是「杠杆本身让你睡不着」,不是「这两家公司变差了」。"
+                 f"这两条理由都成立,但要分开想 —— 混在一起会让人以为数据支持卖,"
+                 f"其实数据说的是别的。")
     L.append("")
-    L.append("注意第 4 步:**不用把新易盛全卖掉**,卖到把剩余负债还清就够了。"
-             "多卖的部分不再降杠杆,只是把股票换成现金 —— 那是另一个决定,"
-             "依据是它自己的减仓建议,不是降杠杆。")
-    L.append("")
+    # ⚠ 这两段以前写死了「第 4 步」「新易盛」「中际旭创」。建议一变它们就成了错话,
+    #   而且不报错。现在从上面那张表实际算出来的顺序里取。
+    if partial:
+        L.append(f"注意第 {partial[0]} 步:**不用把{partial[1]}全卖掉**,"
+                 f"卖到把剩余负债还清就够了。多卖的部分不再降杠杆,"
+                 f"只是把股票换成现金 —— 那是另一个决定,"
+                 f"依据是它自己的减仓建议,不是降杠杆。")
+        L.append("")
     L.append("**不用一次做完。** 上表是顺序不是时间表:可以先做第 1 步看两周,"
-             "再决定要不要往下走。**但顺序别倒过来** —— "
-             "先卖中际旭创(唯一建议持有的那只)会同时丢掉基本面最硬的仓位"
-             "和最少的降杠杆效果。")
+             "再决定要不要往下走。**但顺序别倒过来**"
+             + (f" —— 先卖{keep_first[0]}(五只里评分最高的那只,"
+                f"建议是「{keep_first[1]}」,{keep_first[2]:+d} 分)"
+                f"会丢掉我们判断最该留的那块仓位"
+                + ("。" if not keep_first[3] else
+                   ",而且它背着自己的融资负债 —— 卖它拿回的钱要先还它自己的债,"
+                   "能腾出来降杠杆的现金反而比卖没负债的那几只少。")
+                if keep_first else
+                "。表里每一只现在都是建议减的,所以按盈亏和负债结构排的这个顺序"
+                "就是降杠杆效率最高的那个。"))
     L.append("")
 
 
-def sec_triggers(j, L):
+def sec_triggers(j, views, L):
     a, ps, md = j["account"], j["positions"], j["margin_debt"]
     mv = sum(p["market_value"] for p in ps)
     cash = a["可用现金"]
@@ -543,12 +641,36 @@ def sec_triggers(j, L):
              f"| 对应总市值 {money(r180)},即再跌 {abs((r180 / mv - 1) * 100):.0f}%。"
              f"180% 不是券商的线,是**给自己留的缓冲** —— "
              f"等到 {lines['警戒线_pct']}% 才动,那时候是被动卖 |")
-    L.append(f"| 两只光模块合计跌破成本的 30% | 当前新易盛 −19.3%、中际旭创 −25.8% "
-             "| 它们同涨同跌,合计占七成仓位,这一条比任何单只的技术位都要紧 |")
-    L.append("| 中际旭创的增速倍数掉回 1.0x 以下 | 当前 2.01x "
-             "| 它现在是**在得份额**,这是继续持有它的主要理由。掉回去,理由就没了 |")
-    L.append("| 新易盛 2026Q3 单季营收低于 119.5 亿 | 预测区间下沿 "
-             "| 低于我们最谨慎的推法,说明推法错了,要先改方法再谈估值 |")
+    # ⚠ 下面几条以前把「新易盛 −19.3%」「中际旭创 2.01x」「119.5 亿」写死在代码里。
+    #   持仓一变、季报一出,这几个数就都是旧的,而文档看不出任何异常。
+    #   现在全部从 account.json 和当轮管线结果里取。
+    by_mv = sorted(ps, key=lambda p: -p["market_value"])[:2]
+    if len(by_mv) == 2:
+        share2 = sum(p["market_value"] for p in by_mv) / mv * 100
+        cost2 = sum(p["cost"] * p["shares"] for p in by_mv)
+        mv2 = sum(p["market_value"] for p in by_mv)
+        both = (mv2 / cost2 - 1) * 100 if cost2 else 0.0
+        cur = "、".join(f"{p['name']} {p['pnl_pct']:+.1f}%" for p in by_mv)
+        L.append(f"| 最大两只**合计**浮亏跌破 −30% | 合计 {both:+.1f}%({cur}) "
+                 f"| {'、'.join(p['name'] for p in by_mv)} 合计占 "
+                 f"{share2:.0f}% 仓位,这一条比任何单只的技术位都要紧 |")
+    # 「份额还在扩」是继续持有的理由 —— 只对基本面拿到正分的那些票才成立
+    for p in ps:
+        v = views.get(p["code"])
+        cp = v and v["产业链"]
+        if not cp or v["建议"]["基本面"][0] <= 0:
+            continue
+        L.append(f"| {p['name']}的增速倍数掉回 1.0x 以下 | 当前 {cp['终点']:.2f}x "
+                 f"| 它现在**在得份额**,这是继续持有它的主要理由。掉回去,理由就没了 |")
+    # 预测区间下沿 —— 跌破就说明推法错了,先改方法再谈估值
+    for p in by_mv:
+        v = views.get(p["code"])
+        rv = v and (v["预测"].get("营收区间") or None)
+        if not rv:
+            continue
+        L.append(f"| {p['name']} {v['预测']['预测期']} 单季营收低于 "
+                 f"{rv['low'] / 1e8:,.1f} 亿 | 预测区间下沿 "
+                 f"| 低于我们最谨慎的推法,说明推法错了,要先改方法再谈估值 |")
     rate = j.get("_融资利率_pct")
     if rate:
         yr = sum(d["未还本金"] for d in md) * rate / 100
@@ -590,7 +712,9 @@ def sec_disclaim(j, L):
              "| 改 `account.json` 的 `_融资利率_pct` |")
     L.append("| 警戒线 / 平仓线 | **行业通行值,不是从你的合同读的** "
              "| 查合同后改 `account.json` 的 `_担保比例线` |")
-    L.append("| 每只的判断(第 5 节) | 同目录各自的持仓决策报告 | `tools/report.py <代码>` |")
+    L.append("| 每只的判断 / 评分 / 执行顺序(第 5、7、8 节) "
+             "| **和个股报告同一条管线现算**(valuation → forecast → advice),"
+             "不是写死的常量 | 跟着 `--raw` 的数据走,重抓数据就变 |")
     L.append("")
     L.append("**那些判断背后的数据源**(完整目录在各只报告的第 11 节):")
     L.append("")
@@ -601,13 +725,15 @@ def sec_disclaim(j, L):
     L.append("```bash")
     L.append("cd ~/astock-lab-private")
     L.append("tools/margin_account.py --account private/portfolio/account.json \\")
+    L.append("    --raw data/raw \\")
     L.append("    --out private/reports/<日期>/融资融券账户操盘文档.md")
     L.append("```")
     L.append("")
 
 
-def build(fp: Path) -> str:
+def build(fp: Path, raw: Path) -> str:
     j = load(fp)
+    views = load_views([p["code"] for p in j["positions"]], raw)
     L = ["# 融资融券账户 · 操盘文档", ""]
     L.append(f"生成于 {date.today().isoformat()} · 账户数据截至 "
              f"{j.get('_截图时间', '?')} · {j.get('_券商', '')}"
@@ -621,10 +747,10 @@ def build(fp: Path) -> str:
     sec_three_numbers(j, L)
     sec_distance(j, L)
     sec_cost(j, L)
-    sec_each(j, L)
-    sec_options(j, L)
-    sec_plan(j, L)
-    sec_triggers(j, L)
+    sec_each(j, views, L)
+    sec_options(j, views, L)
+    sec_plan(j, views, L)
+    sec_triggers(j, views, L)
     sec_disclaim(j, L)
     return "\n".join(L) + "\n"
 
@@ -633,9 +759,12 @@ def main() -> int:
     ap = argparse.ArgumentParser(description=__doc__,
                                  formatter_class=argparse.RawDescriptionHelpFormatter)
     ap.add_argument("--account", default="private/portfolio/account.json")
+    ap.add_argument("--raw", default="data/raw",
+                    help="原始数据目录。第 5、7、8 节的建议和触发条件从这里现算,"
+                         "不再是写死在代码里的常量")
     ap.add_argument("--out")
     a = ap.parse_args()
-    md = build(Path(a.account))
+    md = build(Path(a.account), Path(a.raw))
     if a.out:
         Path(a.out).parent.mkdir(parents=True, exist_ok=True)
         Path(a.out).write_text(md, encoding="utf-8")
