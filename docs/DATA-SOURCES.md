@@ -37,6 +37,42 @@ $VENV/bin/python tools/probe_all_sources.py \
 
 ---
 
+## 一之二、抓下来放哪:落盘结构
+
+```
+data/raw/
+├── quotes/ financials/ forecast/ consensus/ ratings/
+├── surveys/ announcements/ research/ chips/     ← A 股,<code>/<date>.json
+├── overseas/    <ticker>/<date>.json            ← 海外上下游 21 只
+├── transcripts/ <会议>/<date>.txt               ← 电话会纪要正文
+├── macro/       <date>-<项>.json
+└── meta/        <date>.json                     ← 本次抓取的健康汇总
+```
+
+每个文件是**信封**不是裸数据:
+
+```json
+{"source":"baostock query_forecast_report","url":"...","fetched_at":"2026-09-01T23:42:11",
+ "params":{...},"ok":true,"rows":4,"error":null,"data":[...]}
+```
+
+时效、出处、成败因此是免费得到的。**抓失败的条目留在盘上标 `ok:false`** ——
+静默丢弃会让读的人以为这类数据根本不存在,而「今天没抓到」和「不存在」
+对决策的含义完全相反。
+
+三条命令:
+
+```bash
+tools/probe_all_sources.py --json /tmp/s.json --markdown /tmp/s.md   # 先探
+tools/fetch_all.py --codes 300502,300308 --peers --macro             # 再抓
+tools/data_digest.py --code 300502 --overseas --pdf                  # 出文档
+```
+
+`data_digest.py` 出的是**给人读的**数据源明细(MD + PDF):一只股票当前手上到底有哪些数据、
+来自哪个源、抓于何时、内容是什么、还缺什么,按「领先→同步→滞后」组织,可以直接发出去。
+
+---
+
 ## 二、实测清单
 ### 1 行情与技术位
 
@@ -219,18 +255,26 @@ $VENV/bin/python tools/probe_all_sources.py \
 
 ## 七、还缺什么(下一步)
 
-按价值排:
+本轮已补上(2026-09-01):
 
-1. **外资行评级/目标价** —— 唯一影响过结论的缺口。做法见 §五③(人工投喂 + 结构化)
-2. **公司季度指引** —— 新易盛在电话会给了 `Rmb4.2bn~6.2bn` 的季度净利指引,
-   我们从没抓过。散在公告和调研纪要里,要做关键词抽取
-3. **公告正文关键词识别** —— 现在只取到列表。中标/合同/订单对订单驱动的公司
-   (杰瑞、深科达)比财报更领先
-4. **机构调研纪要正文** —— 元数据已通,正文在巨潮的公告 PDF 里,
-   和 `research.py --dig` 是同一套路,可复用
-5. **面板厂 capex** —— 深科达真正的下游。现金流量表接口已通,写个聚合就行
-6. **PIT 纪律** —— 每个取数函数加 `as_of` 入参,按 `publish_date <= as_of` 切片。
-   没有这个,历史分位和基准率都在偷看未来
+| 原先列为缺 | 现在 |
+|---|---|
+| 海外原始材料 | ✅ `yfinance` 给 21 只上下游的目标价/分析师预估/**评级变动**(137~992 条/只);Motley Fool 电话会纪要正文可程序化取 |
+| 外资口径的一致预期 | ✅ 两条路:① Yahoo 的 A 股一致预期池**含外资行**(实测新易盛 2026E 营收下沿 544.3 亿正是高盛那份的数);② 巨潮里的外资合资券商(野村东方国际、汇丰前海),`fetch_all` 会标 `_是否外资系` |
+| 机构调研 | ✅ 东财 `RPT_ORG_SURVEYNEW`,含接待家数/形式/时间/接待人 |
+| 公告 | ✅ 东财 `np-anotice-stock` |
+| 研报原件 | ✅ `research/` 落列表 + PDF 原件(抽错了能回去核) |
+| 外部研报结构化 | ✅ `extern-research-ingest` skill |
+| 数据时效 | ✅ 信封里的 `fetched_at`,digest 每条都显示 |
+
+还缺(按价值排):
+
+1. **公司季度指引** —— 新易盛在电话会给了 `Rmb4.2bn~6.2bn` 的季度净利指引,散在公告与调研纪要里,要做关键词抽取
+2. **公告正文关键词识别** —— 现在只取到列表。中标/合同/订单对订单驱动的公司比财报更领先
+3. **机构调研纪要正文** —— 元数据已通,正文在巨潮的公告 PDF 里,和 `research.py --dig` 同套路
+4. **面板厂 capex** —— 深科达真正的下游。现金流量表接口已通,写个聚合就行
+5. **PIT 纪律** —— 每个取数函数加 `as_of`,按 `publish_date <= as_of` 切片。没有这个,历史分位和基准率都在偷看未来
+6. **高盛/大摩等纯离岸研报** —— 结构上拿不到,走 §五③ 的人工投喂
 
 ---
 

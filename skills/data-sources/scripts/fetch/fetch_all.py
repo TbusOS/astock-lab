@@ -267,30 +267,71 @@ def fetch_announcements(code, out):
         write(out, "announcements", code, "", env("东财 np-anotice-stock", ok=False, err=repr(e)))
 
 
-def fetch_chips(code, out):
-    import akshare as ak
-    mk = "sh" if code[0] == "6" else "sz"
-    jobs = [("stock_individual_fund_flow", {"stock": code, "market": mk}, "资金流"),
-            ("stock_restricted_release_detail_em",
-             {"start_date": TODAY.replace("-", ""), "end_date": f"{date.today().year + 1}1231"}, "解禁")]
-    for fn, kw, cn in jobs:
-        try:
-            df = getattr(ak, fn)(**kw)
-            if fn.startswith("stock_restricted") and df is not None and len(df):
-                col = next((c for c in df.columns if "代码" in c), None)
-                if col:
-                    df = df[df[col].astype(str).str.zfill(6) == code]
-            write(out, "chips", code, cn, env(f"akshare {fn}", params=kw, data=df_json(df)))
-        except Exception as e:
-            write(out, "chips", code, cn, env(f"akshare {fn}", ok=False, err=repr(e)))
+def _em(out, group, code, name, report, flt=None, size=60, note="", extra=None):
+    """东财 datacenter-web 的统一取法。**这台主机本机稳定**,而 push2/push2his 时通时不通 ——
+    能走 datacenter-web 的就别走 push2。同一个 eastmoney.com 下两种行为。"""
+    import requests
+    p = {"reportName": report, "columns": "ALL", "pageNumber": 1, "pageSize": size,
+         "source": "WEB", "client": "WEB"}
+    if flt:
+        p["filter"] = flt
+    if extra:
+        p.update(extra)
     try:
-        import efinance as ef
-        write(out, "chips", code, "股东户数",
-              env("efinance get_latest_holder_number",
-                  data=df_json(ef.stock.get_latest_holder_number(code))))
+        r = requests.get("http://datacenter-web.eastmoney.com/api/data/v1/get", params=p,
+                         headers={"User-Agent": "Mozilla/5.0",
+                                  "Referer": "https://data.eastmoney.com/"}, timeout=30)
+        d = (r.json() or {}).get("result") or {}
+        write(out, group, code, name,
+              env(f"东财 {report}", url="https://data.eastmoney.com/", params={**p, "note": note},
+                  data=d.get("data"), rows=d.get("count"), ok=bool(d.get("data"))))
     except Exception as e:
-        write(out, "chips", code, "股东户数",
-              env("efinance get_latest_holder_number", ok=False, err=repr(e)))
+        write(out, group, code, name, env(f"东财 {report}", ok=False, err=repr(e)))
+
+
+def fetch_chips(code, out):
+    """筹码与杠杆。**优先走 datacenter-web** —— 2026-09-01 实测:
+    efinance 的 get_latest_holder_number 参数是**日期不是代码**(传代码报
+    「time data '300502' does not match format」),而 akshare 的个股资金流走
+    push2his,这台主机本机长期不稳。两条都换成 datacenter-web 的 reportName。"""
+    fl = f'(SECURITY_CODE="{code}")'
+    _em(out, "chips", code, "股东户数", "RPT_HOLDERNUMLATEST", fl, 8,
+        "含 HOLDER_NUM/PRE_HOLDER_NUM/HOLDER_NUM_RATIO/END_DATE —— **END_DATE 是数据截止日,"
+        "和实时价不是同一时点,报告里必须标出来**")
+    _em(out, "chips", code, "资金流", "RPT_DMSK_TS_STOCKNEW", fl, 60,
+        "SUPERDEAL/PRIME 各档净流入。替代 akshare stock_individual_fund_flow(走 push2his 不稳)")
+    _em(out, "chips", code, "大宗交易", "RPT_BLOCKTRADE_STA", fl, 60,
+        "折溢价与成交额 —— 大额换手的价格与对手方")
+
+    import akshare as ak
+    try:                                   # 解禁:领先,未来的供给冲击
+        df = ak.stock_restricted_release_detail_em(
+            start_date=TODAY.replace("-", ""), end_date=f"{date.today().year + 1}1231")
+        col = next((c for c in df.columns if "代码" in c), None)
+        if col is not None:
+            df = df[df[col].astype(str).str.zfill(6) == code]
+        write(out, "chips", code, "解禁",
+              env("akshare stock_restricted_release_detail_em", data=df_json(df)))
+    except Exception as e:
+        write(out, "chips", code, "解禁",
+              env("akshare stock_restricted_release_detail_em", ok=False, err=repr(e)))
+    try:                                   # 融资融券
+        fn = "stock_margin_detail_sse" if code[0] == "6" else "stock_margin_detail_szse"
+        df = getattr(ak, fn)(date=(date.today()).strftime("%Y%m%d"))
+        col = next((c for c in df.columns if "代码" in c or "证券代码" in c), None)
+        if col is not None:
+            df = df[df[col].astype(str).str.zfill(6) == code]
+        write(out, "chips", code, "融资融券", env(f"akshare {fn}", data=df_json(df)))
+    except Exception as e:
+        write(out, "chips", code, "融资融券", env("akshare margin_detail", ok=False, err=repr(e)))
+    try:                                   # 前十大流通股东
+        import efinance as ef
+        write(out, "chips", code, "前十大流通股东",
+              env("efinance get_top10_stock_holder_info",
+                  data=df_json(ef.stock.get_top10_stock_holder_info(code, top=4))))
+    except Exception as e:
+        write(out, "chips", code, "前十大流通股东",
+              env("efinance get_top10_stock_holder_info", ok=False, err=repr(e)))
 
 
 def fetch_overseas(out, only=None):
