@@ -2,7 +2,7 @@
 """md2html —— 把本仓生成的 markdown 报告渲染成带版式的 HTML。
 
 用法:
-    python3 md2html.py 报告.md 报告.html ["副标题"]
+    python3 md2html.py 报告.md 报告.html ["副标题"] [--landscape] [--no-disclaimer]
     python3 -c "import md2html; html = md2html.render(md_text, title='…')"
 
 为什么不用现成的 markdown 库:
@@ -40,6 +40,12 @@ h3{font-size:13.5px;font-weight:600;margin:14px 0 6px}
 p{margin:6px 0}
 table{width:100%;border-collapse:collapse;font-size:10.5px;margin:8px 0 10px;
 page-break-inside:avoid}
+/* 长表(>8 行)不能整块 avoid —— 那会把整张表推到下一页,留下大半页空白。
+   正确做法:表可跨页,但**单行**不许被切开,表头每页重复。
+   2026-09-01 踩过:数据源清单第 2 页三分之二是空的。 */
+table.long{page-break-inside:auto;table-layout:fixed;word-break:break-word}
+table.long tr{page-break-inside:avoid}
+table.long thead{display:table-header-group}
 th,td{border:1px solid var(--line);padding:5px 7px;text-align:left;vertical-align:top}
 th{background:#f2f0e9;font-size:10px;font-weight:600}
 tr:nth-child(even) td{background:#fbfaf6}
@@ -103,7 +109,12 @@ def _quote_class(text: str) -> str:
     return ""
 
 
-def render(md: str, title: str = "报告", subtitle: str = "") -> str:
+def render(md: str, title: str = "报告", subtitle: str = "",
+           landscape: bool = False,
+           footer: str = "本报告是机械判据，不是投资建议。所有决策和后果都是你自己的。") -> str:
+    """landscape:参考类长表在 A4 竖版会被压成一字一行,横版才放得下。
+    footer:**不能写死** —— 数据源清单不是投资建议报告,套上免责声明就不对了。
+    (2026-09-01 踩过,同一类问题在 anth_template.html 上也踩过)"""
     lines = md.split("\n")
     out, i = [], 0
     n = len(lines)
@@ -130,11 +141,13 @@ def render(md: str, title: str = "报告", subtitle: str = "") -> str:
             while j < n and lines[j].startswith("|"):
                 body.append([c.strip() for c in lines[j].strip().strip("|").split("|")])
                 j += 1
-            t = ["<table><tr>" + "".join(f"<th>{_inline(h)}</th>" for h in head) + "</tr>"]
+            cls = " class=\"long\"" if len(body) > 8 else ""
+            t = [f"<table{cls}><thead><tr>"
+                 + "".join(f"<th>{_inline(h)}</th>" for h in head) + "</tr></thead><tbody>"]
             for row in body:
                 lab = row[0] if row else ""
                 t.append("<tr>" + "".join(_cell(c, lab) for c in row) + "</tr>")
-            t.append("</table>")
+            t.append("</tbody></table>")
             out.append("".join(t))
             i = j
             continue
@@ -182,12 +195,14 @@ def render(md: str, title: str = "报告", subtitle: str = "") -> str:
         i += 1
 
     sub = f'<p class="meta">{_html.escape(subtitle)}</p>' if subtitle else ""
+    land = ("<style>@page{size:A4 landscape;margin:12mm 10mm}"
+            ".wrap{max-width:272mm}</style>\n" if landscape else "")
+    foot = f'\n<div class="foot">{_html.escape(footer)}</div>' if footer else ""
     return (
         "<!doctype html>\n<html lang=\"zh-CN\">\n<meta charset=\"utf-8\">\n"
-        f"<title>{_html.escape(title)}</title>\n<style>{CSS}</style>\n"
+        f"<title>{_html.escape(title)}</title>\n<style>{CSS}</style>\n{land}"
         f'<body><div class="wrap">{sub}\n' + "\n".join(out) +
-        '\n<div class="foot">本报告是机械判据，不是投资建议。'
-        '所有决策和后果都是你自己的。</div></div></body></html>\n'
+        foot + '</div></body></html>\n'
     )
 
 
@@ -195,12 +210,17 @@ def main() -> int:
     if len(sys.argv) < 3:
         print(__doc__)
         return 1
-    src, dst = Path(sys.argv[1]), Path(sys.argv[2])
-    sub = sys.argv[3] if len(sys.argv) > 3 else ""
+    argv = [a for a in sys.argv[1:] if not a.startswith("--")]
+    flags = {a for a in sys.argv[1:] if a.startswith("--")}
+    src, dst = Path(argv[0]), Path(argv[1])
+    sub = argv[2] if len(argv) > 2 else ""
+    land = "--landscape" in flags
+    foot = "" if "--no-disclaimer" in flags else None
     md = src.read_text(encoding="utf-8")
     t = next((l.lstrip("# ").strip() for l in md.split("\n") if l.startswith("# ")), src.stem)
     dst.parent.mkdir(parents=True, exist_ok=True)
-    dst.write_text(render(md, title=t, subtitle=sub), encoding="utf-8")
+    kw = {} if foot is None else {"footer": foot}
+    dst.write_text(render(md, title=t, subtitle=sub, landscape=land, **kw), encoding="utf-8")
     print(f"已写入 {dst}（{dst.stat().st_size/1024:.0f} KB）")
     return 0
 
