@@ -24,7 +24,7 @@ from __future__ import annotations
 import argparse
 import json
 import sys
-from datetime import date
+from datetime import date, timedelta
 from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parent))
@@ -213,27 +213,66 @@ def sec_cost(j, L):
     a = j["account"]
     mv = sum(p["market_value"] for p in j["positions"])
     equity = a["总资产"] - sum(d["当前负债总额"] for d in md)
+    rate = j.get("_融资利率_pct")
 
     L.append("## 4 利息在吃什么")
     L.append("")
     L.append(f"融资本金 **{money(principal, 2)}** 元,已累计利息 **{money(accrued, 2)}** 元。")
     L.append("")
-    L.append("我**不知道你的融资利率**(界面上没有),所以按常见区间列出来:")
+
+    if rate is None:
+        L.append("**不知道融资利率**(界面上没有),按常见区间列:")
+        L.append("")
+        L.append("| 年利率 | 每天 | 每月 | 每年 | 市值要涨多少打平 | 净资产要涨多少打平 |")
+        L.append("|---:|---:|---:|---:|---:|---:|")
+        for r in (4.0, 5.0, 6.0, 8.0):
+            yr = principal * r / 100
+            L.append(f"| {r:.1f}% | {money(yr / 365, 1)} | {money(yr / 12, 0)} "
+                     f"| {money(yr, 0)} | {yr / mv * 100:.2f}% | {yr / equity * 100:.2f}% |")
+        L.append("")
+        L.append("**去 APP 查实际利率填进 account.json**,填了这里就变成确定值。")
+        L.append("")
+        return
+
+    yr = principal * rate / 100
+    L.append(f"融资利率 **{rate:.1f}%**({j.get('_融资利率来源', '来源未记')}):")
     L.append("")
-    L.append("| 年利率 | 每天 | 每月 | 每年 | 市值要涨多少才打平 | 净资产要涨多少才打平 |")
-    L.append("|---:|---:|---:|---:|---:|---:|")
-    for r in (5.0, 6.0, 7.0, 8.0):
-        yr = principal * r / 100
-        L.append(f"| {r:.1f}% | {money(yr / 365, 1)} | {money(yr / 12, 0)} | {money(yr, 0)} "
-                 f"| {yr / mv * 100:.2f}% | {yr / equity * 100:.2f}% |")
+    L.append("| | 金额 | 占什么 |")
+    L.append("|---|---:|---|")
+    L.append(f"| 每天 | {money(yr / 365, 2)} | — |")
+    L.append(f"| 每月 | {money(yr / 12, 0)} | — |")
+    L.append(f"| 每年 | **{money(yr, 0)}** | 净资产的 **{yr / equity * 100:.2f}%** |")
+    L.append(f"| 打平需要 | 市值涨 **{yr / mv * 100:.2f}%/年** | 或净资产涨 "
+             f"{yr / equity * 100:.2f}%/年 |")
     L.append("")
-    L.append("**去 APP 查你的实际融资利率和开仓日**,这两个数一填,上面就变成确定值。"
-             "在那之前把它当区间看。")
+    L.append(f"> **{rate:.0f}% 是一个不高的利率。** 这条负债一年吃掉净资产 "
+             f"{yr / equity * 100:.1f}%,不到 3 个点 —— "
+             f"横盘的时间成本是有,但不是压迫性的。"
+             f"**这个账户的风险不在利息,在杠杆和集中度**(第 2 节)。"
+             f"如果利率是 8%,结论会不一样;4% 的情况下,"
+             f"「因为利息所以必须尽快减仓」这个理由**不成立**。")
     L.append("")
-    L.append("> 利息的意思是:**横盘不是没事,横盘就是在亏。** "
-             "按 6% 算,这笔负债一年吃掉净资产的 4%。"
-             "所以持有杠杆仓位是有时间成本的 —— "
-             "「再等等看」这个选项本身就在花钱。")
+
+    # 反推开仓时间。利率已知时这是一个可以算的数,但它有假设,必须标出来。
+    L.append("**从已计息金额反推开仓时间**(推算,不是事实):")
+    L.append("")
+    L.append("| 标的 | 未还本金 | 每天利息 | 已计息 | 推算已持有 | 推算开仓日 |")
+    L.append("|---|---:|---:|---:|---:|---|")
+    asof = j.get("_截图时间", "")[:10]
+    base = date.fromisoformat(asof) if len(asof) == 10 else date.today()
+    for d in md:
+        per_day = d["未还本金"] * rate / 100 / 365
+        if per_day <= 0:
+            continue
+        days = d["未还利息"] / per_day
+        L.append(f"| {d['name']} | {money(d['未还本金'], 0)} | {money(per_day, 2)} "
+                 f"| {money(d['未还利息'], 2)} | {days:.0f} 天 "
+                 f"| 约 {base - timedelta(days=round(days))} |")
+    L.append("")
+    L.append("> **这是推算,依据是「按日单利计息、期间没有部分还款」。** "
+             "实测把推算日拿去对当天的股价,比持仓均价高 5%~8% —— "
+             "两者并不矛盾:**成本是整个仓位的均价,融资只是其中一批**,"
+             "说明是分批建仓的。要确定实际开仓日,去 APP 的「查询 → 融资明细」看。")
     L.append("")
 
 
@@ -335,8 +374,9 @@ def sec_options(j, L):
         ("D 卖深科达 + 杰瑞 + 胜宏", ["688328", "002353", "300476"],
          "把三只非核心的都清掉,负债剩一小半"),
     ]
-    L.append("| 方案 | 卖出金额 | 还债后负债 | 维持担保比例 | 杠杆 | 离平仓线还要跌 | "
-             "年省利息(按6%) |")
+    rate = (j.get("_融资利率_pct") or 6.0) / 100
+    L.append(f"| 方案 | 卖出金额 | 还债后负债 | 维持担保比例 | 杠杆 | 离平仓线还要跌 | "
+             f"年省利息(按{rate * 100:.0f}%) |")
     L.append("|---|---:|---:|---:|---:|---:|---:|")
     for name, codes, _ in plans:
         r = after(codes)
@@ -344,7 +384,7 @@ def sec_options(j, L):
         ratio = ratio_at(nta, nd) if nd else None
         lev = nmv / equity
         drop = drop_to_line(nmv, r["新现金"], nd, lines["平仓线_pct"]) if nd else None
-        saved = r["还债"] * 0.06
+        saved = r["还债"] * rate
         L.append(f"| {name} | {money(r['卖出'])} | {money(nd)} "
                  + (f"| {ratio:.0f}% " if ratio else "| 无负债 ")
                  + f"| {lev:.2f}x "
@@ -399,7 +439,16 @@ def sec_triggers(j, L):
              "| 它现在是**在得份额**,这是继续持有它的主要理由。掉回去,理由就没了 |")
     L.append("| 新易盛 2026Q3 单季营收低于 119.5 亿 | 预测区间下沿 "
              "| 低于我们最谨慎的推法,说明推法错了,要先改方法再谈估值 |")
-    L.append("| 融资利率上调 | 未知,去查 | 利率一升,横盘的成本跟着升 |")
+    rate = j.get("_融资利率_pct")
+    if rate:
+        yr = sum(d["未还本金"] for d in md) * rate / 100
+        eq = a["总资产"] - debt
+        L.append(f"| 融资利率上调到 8% 以上 | 当前 {rate:.1f}% "
+                 f"| 现在一年吃掉净资产 {yr / eq * 100:.1f}%,时间成本不算重。"
+                 f"翻倍到 8% 就是 {yr * 2 / eq * 100:.1f}%,"
+                 f"那时候「再等等看」的代价就不一样了 |")
+    else:
+        L.append("| 融资利率上调 | 未知,去查 | 利率一升,横盘的成本跟着升 |")
     L.append("")
     L.append("> 这几条的用法是:**现在就写下来,到了就执行,不要到时候再想。** "
              "杠杆仓位最危险的时刻是判断和情绪一起摇摆的时候 —— "
