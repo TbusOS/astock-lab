@@ -1,1 +1,1 @@
-../skills/astock-quote/scripts/astock.py
+../skills/data-sources/scripts/fetch/astock.py

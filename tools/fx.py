@@ -1,1 +1,1 @@
-../skills/astock-quote/scripts/fx.py
+../skills/data-sources/scripts/fetch/fx.py

@@ -1,1 +1,1 @@
-../skills/astock-quote/scripts/commodity.py
+../skills/data-sources/scripts/fetch/commodity.py

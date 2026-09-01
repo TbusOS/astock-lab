@@ -1,1 +1,1 @@
-../skills/stock-analysis-workflow/scripts/probe_sources.py
+../skills/data-sources/scripts/probe/probe_sources.py

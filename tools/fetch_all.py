@@ -1,0 +1,1 @@
+../skills/data-sources/scripts/fetch/fetch_all.py

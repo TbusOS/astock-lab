@@ -1,1 +1,1 @@
-../skills/astock-quote/scripts/efdata.py
+../skills/data-sources/scripts/fetch/efdata.py

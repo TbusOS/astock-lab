@@ -1,1 +1,1 @@
-../skills/astock-quote/scripts/consensus.py
+../skills/data-sources/scripts/fetch/consensus.py

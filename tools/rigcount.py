@@ -1,1 +1,1 @@
-../skills/astock-quote/scripts/rigcount.py
+../skills/data-sources/scripts/fetch/rigcount.py

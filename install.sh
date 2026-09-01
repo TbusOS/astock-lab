@@ -35,10 +35,18 @@ if [ "$DO_ENV" = 1 ]; then
   fi
   echo "  装依赖(几分钟)…"
   "$VENV/bin/pip" install -q --upgrade pip
-  "$VENV/bin/pip" install -q akshare baostock pandas requests numpy pyarrow
+  # 必需 —— 少一个就有整类数据拿不到,所以不设成可选:
+  #   akshare/baostock  A 股行情与财务的主干
+  #   yfinance          海外上下游的目标价/分析师预估/**评级变动**(A 股也能查到,
+  #                     而且它的一致预期池里含外资行,与同花顺不是同一套)
+  #   pymupdf           研报 PDF:版面文本 + 表格候选 + **逐页渲染**。
+  #                     关键的数常常只在图里,不渲染就等于没读到
+  "$VENV/bin/pip" install -q akshare baostock pandas requests numpy pyarrow \
+                            yfinance pymupdf
   echo "  ✅ 必需依赖装好"
   echo "  可选:$VENV/bin/pip install edgartools     # capex --engine both 的交叉验证"
   echo "  可选:npm i playwright && npx playwright install chromium  # 出 PDF"
+  echo "        出 PDF 时设 PLAYWRIGHT_ROOT 指到装了 playwright 的目录"
 
   # efinance:pip 版常年落后,直接 clone 源码用
   if [ ! -d "$LAB/repos/efinance/efinance" ]; then

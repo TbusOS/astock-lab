@@ -1,0 +1,1 @@
+../skills/finance-pdf-report/scripts/check_pdf.py

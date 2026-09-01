@@ -1,1 +1,1 @@
-../skills/astock-quote/scripts/capex.py
+../skills/data-sources/scripts/fetch/capex.py

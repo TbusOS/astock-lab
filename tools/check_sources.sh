@@ -1,1 +1,1 @@
-../skills/astock-quote/scripts/check_sources.sh
+../skills/data-sources/scripts/probe/check_sources.sh
