@@ -79,7 +79,9 @@ TEMPLATE = {
         "provenance": "",                # 哪来的。转手流出的要写清楚,含水印文字
         "conflict_disclosure": "",       # 「未来 3 个月拟寻求投行业务」这类,必填
     },
-    "call": {"rating": "", "target_price": None, "currency": "CNY",
+    # 国内券商多数**不给目标价**(只给评级 + 盈利预测表),这是行业惯例不是漏填。
+    # 所以留一个说明位:填了它就等于"确认过,这份确实没有",待填清单不再追。
+    "call": {"rating": "", "target_price": None, "target_price_note": "", "currency": "CNY",
              "price_at_report": None, "upside_pct": None, "horizon_months": 12},
     # ★ 最值钱的一节:研报用什么锚定估值。我们自己就错在这里 ——
     #   用了过去十二个月 PE 的历史分位去乘未来的利润,而卖方用的是**前瞻 PE 的历史带**。
@@ -200,21 +202,30 @@ def extract(pdf: Path, out: Path, dpi: int) -> int:
 # (填过的 filled.json 永远不覆盖)。所以 batch 只推进机械那一半,
 # 末尾把"还差谁"打出来 —— 不打这张清单,批量抽完就没人知道该接着填哪份。
 
-# 字段是按「汇总表要哪几列」倒推的。缺这里任何一项,那份研报在汇总里就是个空格。
+# 字段是按「汇总表要哪几列」倒推的。缺硬项,那份研报在汇总里就是个空格。
+# 元组表示**多选一**:目标价和"确认过没有目标价"填任一个都算数 ——
+# 国内券商多数不给目标价,把它当漏填会让这几份永远挂在待填清单上,清单一旦
+# 有永远消不掉的项,人就不看它了。
 REQUIRED = [
     ("source.publisher",          "机构"),
     ("source.report_date",        "报告日"),
     ("source.ticker",             "标的"),
     ("source.provenance",         "来源"),
     ("call.rating",               "评级"),
-    ("call.target_price",         "目标价"),
+    (("call.target_price", "call.target_price_note"), "目标价(或注明本报告不给)"),
     ("call.price_at_report",      "报告日价"),
     ("valuation_anchor.method",   "估值方法"),
-    ("valuation_anchor.multiple", "目标倍数"),
+    ("valuation_anchor.multiple", "倍数"),
     ("valuation_anchor.base_year", "基准年"),
-    ("valuation_anchor.band.mid", "估值带中枢"),
     ("units.net_income",          "净利单位"),
     ("forecast",                  "分年度预测"),
+]
+
+# 可补项:没有也能用,但有了价值大得多。分开列,免得和"真缺"混在一起。
+NICE = [
+    ("valuation_anchor.band.mid", "估值带中枢(历史前瞻 PE 带,通常只在图里)"),
+    ("source.conflict_disclosure", "利益冲突披露"),
+    ("quarterly",                 "分季度预测"),
 ]
 
 
@@ -231,8 +242,13 @@ def _empty(v) -> bool:
     return v is None or v == "" or v == [] or v == {}
 
 
-def missing_fields(j: dict) -> list[str]:
-    return [label for path, label in REQUIRED if _empty(dig(j, path))]
+def _filled(j: dict, path) -> bool:
+    paths = path if isinstance(path, tuple) else (path,)
+    return any(not _empty(dig(j, x)) for x in paths)
+
+
+def missing_fields(j: dict, table=REQUIRED) -> list[str]:
+    return [label for path, label in table if not _filled(j, path)]
 
 
 def pending(root: Path) -> int:
@@ -246,28 +262,35 @@ def pending(root: Path) -> int:
     for d in dirs:
         fp = d / "filled.json"
         if not fp.exists():
-            rows.append((d.name, "—", ["整份未填(filled.json 不存在)"]))
+            rows.append((d.name, "—", ["整份未填(filled.json 不存在)"], []))
             continue
         try:
             j = json.loads(fp.read_text(encoding="utf-8"))
         except json.JSONDecodeError as e:
-            rows.append((d.name, "—", [f"filled.json 不是合法 JSON:{e}"]))
+            rows.append((d.name, "—", [f"filled.json 不是合法 JSON:{e}"], []))
             continue
-        miss = missing_fields(j)
+        miss, nice = missing_fields(j), missing_fields(j, NICE)
         who = (dig(j, "source.publisher") or "?") + " " + (dig(j, "source.report_date") or "")
         if miss:
-            rows.append((d.name, who.strip(), miss))
+            rows.append((d.name, who.strip(), miss, nice))
         else:
             done += 1
+            if nice:
+                rows.append((d.name, who.strip(), [], nice))
 
-    print(f"待填清单 —— 已抽取 {len(dirs)} 份,填全 {done} 份,还差 {len(rows)} 份")
+    hard = [r for r in rows if r[2]]
+    print(f"待填清单 —— 已抽取 {len(dirs)} 份,硬项填全 {done} 份,还差 {len(hard)} 份")
     if not rows:
         print("  ✓ 全部填完。下一步:validate 再出汇总")
         return 0
-    for name, who, miss in rows:
+    for name, who, miss, nice in rows:
         print(f"\n  ▸ {name}  [{who}]")
-        print(f"    缺 {len(miss)} 项:{'、'.join(miss)}")
-        print(f"    填法:先 Read {root / name}/pages/*.png 逐页看,再改 {root / name}/filled.json")
+        if miss:
+            print(f"    缺 {len(miss)} 项:{'、'.join(miss)}")
+            print(f"    填法:先 Read {root / name}/pages/*.png 逐页看,"
+                  f"再改 {root / name}/filled.json")
+        if nice:
+            print(f"    另可补:{'、'.join(nice)}")
     return 0
 
 

@@ -118,9 +118,11 @@ def sec_calls(reports: list[dict], as_of: dt.date, L: list[str]) -> None:
         if up is None and isinstance(tp, (int, float)) and isinstance(px, (int, float)) and px:
             up = (tp / px - 1) * 100
         cur = c.get("currency") or ""
+        tp_cell = f"{cur} {num(tp)}" if tp is not None else (
+            c.get("target_price_note") or "—")
         L.append(f"| {s.get('publisher') or '—'} | {s.get('report_date') or '—'} "
                  f"| {days_ago(s.get('report_date'), as_of)} | {bare(s.get('ticker'))} "
-                 f"| {c.get('rating') or '—'} | {cur} {num(tp)} | {cur} {num(px)} "
+                 f"| {c.get('rating') or '—'} | {tp_cell} | {cur} {num(px)} "
                  f"| {pct(up)} | {c.get('horizon_months') or '—'} 个月 |")
     L.append("")
     L.append("> 「隐含空间」是**报告日**那天的空间,不是今天的。"
@@ -153,6 +155,27 @@ def sec_anchor(reports: list[dict], L: list[str]) -> None:
     L.append("")
 
 
+def implied_shares(r: dict) -> float | None:
+    """从 净利 ÷ EPS 反推股本(单位随净利的单位走,这里只用来比大小)。
+
+    为什么需要它:**EPS 跨送转不可比**。同一只票同一年,一份研报写 EPS 13.86、
+    另一份写 27.18,差近 2 倍 —— 那不是分歧,是中间做了 1 送 1,股本翻倍。
+    直接并排会造出一个不存在的分歧,而且看起来完全像真的。
+    净利和营收不受股本影响,那两张表才是真能比的。
+    """
+    vals = [r_["net_income"] / r_["eps"]
+            for r_ in r.get("forecast", [])
+            if isinstance(r_.get("net_income"), (int, float))
+            and isinstance(r_.get("eps"), (int, float)) and r_.get("eps")]
+    return sum(vals) / len(vals) if vals else None
+
+
+def shares_comparable(rs: list[dict], tol: float = 0.05) -> bool:
+    """各家隐含股本是否落在同一档(默认 5% 容差)。差太多就是股本口不同,EPS 不能并排。"""
+    v = [x for x in (implied_shares(r) for r in rs) if x]
+    return len(v) < 2 or (max(v) - min(v)) / min(v) <= tol
+
+
 def _unit(r: dict, key: str) -> str:
     return (r.get("units") or {}).get(key) or "未声明"
 
@@ -165,8 +188,13 @@ def auto_nd(vals: list[float]) -> int:
     return 0 if m >= 1000 else (1 if m >= 100 else 2)
 
 
-def _fc_table(group: list[dict], key: str, label: str, L: list[str]) -> None:
-    """一张指标表:行=年份,列=机构。单位不一致就分开出表,不做换算。"""
+def _fc_table(group: list[dict], key: str, label: str, L: list[str],
+              comparable: bool = True) -> None:
+    """一张指标表:行=年份,列=机构。单位不一致就分开出表,不做换算。
+
+    comparable=False 时照样把各家的数列出来(那是原始信息,该看),
+    但**不算极差** —— 算了就等于宣称"这两个数在比同一件事",而它们不是。
+    """
     by_unit: dict[str, list[dict]] = {}
     for r in group:
         by_unit.setdefault(_unit(r, key), []).append(r)
@@ -192,8 +220,9 @@ def _fc_table(group: list[dict], key: str, label: str, L: list[str]) -> None:
         nd = auto_nd([v for v in grid.values()
                       if isinstance(v, (int, float)) and not isinstance(v, bool)])
 
-        L.append("| 年份 | " + " | ".join(pubs) + (" | 极差 | 极差÷最低 |" if len(rs) > 1 else " |"))
-        L.append("|---|" + "---:|" * len(pubs) + ("---:|---:|" if len(rs) > 1 else ""))
+        spread_col = len(rs) > 1 and comparable
+        L.append("| 年份 | " + " | ".join(pubs) + (" | 极差 | 极差÷最低 |" if spread_col else " |"))
+        L.append("|---|" + "---:|" * len(pubs) + ("---:|---:|" if spread_col else ""))
         for y in years:
             vals, cells = [], []
             for i, r in enumerate(rs):
@@ -202,7 +231,7 @@ def _fc_table(group: list[dict], key: str, label: str, L: list[str]) -> None:
                 if isinstance(v, (int, float)) and not isinstance(v, bool):
                     vals.append(v)
             tail = ""
-            if len(rs) > 1:
+            if spread_col:
                 if len(vals) >= 2 and min(vals):
                     spread = max(vals) - min(vals)
                     tail = f" {num(spread, nd)} | {spread / abs(min(vals)) * 100:.1f}% |"
@@ -226,7 +255,17 @@ def sec_forecast(reports: list[dict], L: list[str]) -> None:
             L.append(f"只有 **{group[0].get('source', {}).get('publisher')}** 一家覆盖,"
                      "没有第二家可比 —— 下表是这一家的预测原样,**不构成共识**。")
             L.append("")
-        _fc_table(group, "eps", "每股收益 EPS", L)
+        cmp_eps = shares_comparable(group)
+        if len(group) > 1 and not cmp_eps:
+            sh = [(r.get("source", {}).get("publisher") or "?", implied_shares(r))
+                  for r in group]
+            L.append("> ⚠ **各家的 EPS 不能直接比。** 用「净利 ÷ EPS」反推出来的股本对不上:"
+                     + "、".join(f"{n} ≈ {num(v)}" for n, v in sh if v)
+                     + "。中间做过送转或增发,同一年的每股利润被摊薄到不同的股本上 —— "
+                       "并排看着像 2 倍分歧,其实是股本变了。**下面 EPS 表照列但不算极差**;"
+                       "要比预测请看归母净利和营业收入那两张,它们不受股本影响。")
+            L.append("")
+        _fc_table(group, "eps", "每股收益 EPS", L, comparable=cmp_eps)
         _fc_table(group, "net_income", "归母净利", L)
         _fc_table(group, "revenue", "营业收入", L)
         if len(group) > 1:

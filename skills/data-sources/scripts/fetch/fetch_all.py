@@ -10,7 +10,8 @@
 
     data/raw/
     ├── quotes/        <code>/<date>.json    行情与技术位
-    ├── financials/    <code>/<date>.json    三表 + 杜邦 + 偿债 + 营运
+    ├── financials/    <code>/<date>.json          比率快照(baostock,单期)
+    │                  <code>/<date>-利润表.json 等  **全历史三大表 + 单季指标**
     ├── forecast/      <code>/<date>.json    业绩预告 / 快报  ← 领先
     ├── consensus/     <code>/<date>.json    一致预期(同花顺 + Yahoo 两套)
     ├── ratings/       <code>/<date>.json    评级变动(巨潮,**含外资合资券商**)
@@ -140,6 +141,39 @@ def fetch_financials(code, out):
                                  data=rows, ok=bool(rows))))
         except Exception as e:
             write(out, "financials", code, "", env(f"baostock {fn}", ok=False, err=repr(e)))
+    return got
+
+
+# ── 全历史三大表:自己做预测的地基 ────────────────────────────────────
+# baostock 那六个接口给的是**比率**(毛利率 / ROE / 周转率)且只有一期。
+# 想自己推营收、看存货和预付款的领先关系,必须要绝对值 + 全历史。
+# 三条源都是公司自己报表的转录,不含任何人的观点。
+def fetch_statements(code, out):
+    import akshare as ak
+    got, sina = [], "sz" + code if code[0] in "03" else "sh" + code
+    for sym in ("利润表", "资产负债表", "现金流量表"):
+        try:
+            df = retry(lambda: ak.stock_financial_report_sina(stock=sina, symbol=sym))
+            got.append(write(out, "financials", code, sym,
+                             env("新浪 stock_financial_report_sina",
+                                 url=f"https://vip.stock.finance.sina.com.cn/corp/go.php/"
+                                     f"vFD_FinanceSummary/stockid/{code}.phtml",
+                                 params={"stock": sina, "symbol": sym},
+                                 data=df_json(df), ok=df is not None and not df.empty)))
+        except Exception as e:
+            write(out, "financials", code, sym,
+                  env("新浪 stock_financial_report_sina", ok=False, err=repr(e)))
+    # 同花顺按单季度:省掉自己做累计相减,可以和上面互相核对
+    try:
+        df = retry(lambda: ak.stock_financial_abstract_ths(symbol=code, indicator="按单季度"))
+        got.append(write(out, "financials", code, "单季指标",
+                         env("同花顺 stock_financial_abstract_ths",
+                             url=f"https://basic.10jqka.com.cn/{code}/finance.html",
+                             params={"symbol": code, "indicator": "按单季度"},
+                             data=df_json(df), ok=df is not None and not df.empty)))
+    except Exception as e:
+        write(out, "financials", code, "单季指标",
+              env("同花顺 stock_financial_abstract_ths", ok=False, err=repr(e)))
     return got
 
 
@@ -500,7 +534,8 @@ def fetch_transcripts(out, urls: list[str]):
             print(f"    · {key:<44} 失败 {type(e).__name__}")
 
 
-GROUPS = {"quotes": fetch_quotes, "research": fetch_research, "financials": fetch_financials, "forecast": fetch_forecast,
+GROUPS = {"quotes": fetch_quotes, "research": fetch_research, "financials": fetch_financials,
+          "statements": fetch_statements, "forecast": fetch_forecast,
           "consensus": fetch_consensus, "ratings": fetch_ratings, "surveys": fetch_surveys,
           "announcements": fetch_announcements, "chips": fetch_chips}
 
