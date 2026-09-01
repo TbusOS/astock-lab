@@ -111,10 +111,18 @@ def sec_conclusion(v, f, mkt, name, code, L, cost=None):
     elif f.get("上游说明"):
         L.append(f"- 产业链位置**算不了**:{f['上游说明']}")
     n = f["可用方法数"]
-    L.append(f"- 预测的把握程度:三个方法里 **{n} 个适用**。"
-             + ("三个都不适用,下季营收我们没有可靠推法。" if n == 0 else
-                "只有一个,没有第二个交叉验证,区间要打折看。" if n == 1 else
-                "两个以上互相印证。"))
+    ok_names = [m["name"] for m in f["methods"] if m.get("ok")]
+    bad_names = [m["name"] for m in f["methods"] if not m.get("ok")]
+    L.append(f"- 预测的把握程度:**{n}/3 个方法适用**"
+             + (f"({'、'.join(ok_names)})" if ok_names else "")
+             + (f",不适用的是 {'、'.join(bad_names)}" if bad_names else "")
+             + "。"
+             + ("三个都不适用,下季营收我们没有可靠的推法。" if n == 0 else
+                "只有一个,没有第二个来交叉验证,区间要打折看。" if n == 1 else
+                "多个方法互相印证。"))
+    L.append("  三个方法分别是**存货法**(看供给侧已经花出去的钱)、"
+             "**同比法**(看需求侧的增长趋势)、**环比法**(看这门生意的季节形状),"
+             "每个的算式和失效条件见第 3 节。")
     L.append("")
     L.append("> 上面每一个数都来自公司自己的报表或 SEC 申报原值。"
              "**没有任何一个数来自机构的盈利预测。** 市场怎么看见第 9 节。")
