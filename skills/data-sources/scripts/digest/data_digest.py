@@ -586,7 +586,9 @@ def overseas_doc(raw: Path) -> str:
             for e in load(raw, "overseas", tk):
                 for r in ((e.get("data") or {}).get("upgrades_downgrades") or [])[:4]:
                     recent.append((str(r.get("GradeDate"))[:10], tk, r))
-        for dt_, tk, r in sorted(recent, reverse=True)[:26]:
+        # 只按前两项排 —— 三元组的第三项是 dict,日期和代码都相同时
+        # Python 会拿两个 dict 比大小,直接 TypeError。
+        for dt_, tk, r in sorted(recent, key=lambda x: (x[0], x[1]), reverse=True)[:26]:
             L.append(f"| **{tk}** | {dt_} | {esc(r.get('Firm'))} "
                      f"| {esc(r.get('priceTargetAction'))} | {num(r.get('currentPriceTarget'), 2)} "
                      f"| {num(r.get('priorPriceTarget'), 2)} | {esc(r.get('ToGrade'))} |")
