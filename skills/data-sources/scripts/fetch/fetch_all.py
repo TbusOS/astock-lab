@@ -111,10 +111,12 @@ def bs():
 
 
 def bs_rows(rs):
+    """返回 (行, 字段名)。**字段名必须一起存** —— baostock 返回的是裸数组,
+    只存数组的话文档里会渲染成 ['sz.300502','2026-08-25','0.356666'] 这种没法核对的东西。"""
     out = []
     while rs.error_code == "0" and rs.next():
         out.append(rs.get_row_data())
-    return out
+    return out, list(getattr(rs, "fields", []) or [])
 
 
 def bs_code(code: str) -> str:
@@ -129,11 +131,12 @@ def fetch_financials(code, out):
                    ("query_balance_data", "偿债"), ("query_cash_flow_data", "现金流"),
                    ("query_dupont_data", "杜邦"), ("query_operation_data", "营运")]:
         try:
-            rows = bs_rows(getattr(b, fn)(code=c, year=y, quarter=q))
+            rows, flds = bs_rows(getattr(b, fn)(code=c, year=y, quarter=q))
             if not rows:                                   # 当季未披露就回退一季
-                rows = bs_rows(getattr(b, fn)(code=c, year=y, quarter=max(1, q - 1)))
+                rows, flds = bs_rows(getattr(b, fn)(code=c, year=y, quarter=max(1, q - 1)))
             got.append(write(out, "financials", code, "",
-                             env(f"baostock {fn}", params={"code": c, "year": y, "quarter": q},
+                             env(f"baostock {fn}", params={"code": c, "year": y,
+                                                          "quarter": q, "fields": flds},
                                  data=rows, ok=bool(rows))))
         except Exception as e:
             write(out, "financials", code, "", env(f"baostock {fn}", ok=False, err=repr(e)))
@@ -144,10 +147,11 @@ def fetch_forecast(code, out):
     b, c = bs(), bs_code(code)
     for fn in ("query_forecast_report", "query_performance_express_report"):
         try:
-            rows = bs_rows(getattr(b, fn)(c, start_date="2024-01-01", end_date=TODAY))
+            rows, flds = bs_rows(getattr(b, fn)(c, start_date="2024-01-01", end_date=TODAY))
             write(out, "forecast", code, "",
                   env(f"baostock {fn}", data=rows, ok=True,
-                      params={"code": c, "note": "0 条也是信息:净利变动未超 ±50% 才无需预告"}))
+                      params={"code": c, "fields": flds,
+                              "note": "0 条也是信息:净利变动未超 ±50% 才无需预告"}))
         except Exception as e:
             write(out, "forecast", code, "", env(f"baostock {fn}", ok=False, err=repr(e)))
 
@@ -155,19 +159,21 @@ def fetch_forecast(code, out):
 def fetch_quotes(code, out):
     b, c = bs(), bs_code(code)
     try:
-        rows = bs_rows(b.query_history_k_data_plus(
+        rows, flds = bs_rows(b.query_history_k_data_plus(
             c, "date,open,high,low,close,volume,amount,peTTM,pbMRQ,psTTM,turn",
             start_date="2020-01-01", end_date=TODAY, frequency="d", adjustflag="2"))
         write(out, "quotes", code, "qfq",
               env("baostock query_history_k_data_plus", data=rows,
-                  params={"adjustflag": "2 前复权", "note": "含 peTTM/pbMRQ —— 历史分位的唯一来源"}))
+                  params={"adjustflag": "2 前复权", "fields": flds,
+                          "note": "含 peTTM/pbMRQ —— 历史分位的唯一来源"}))
     except Exception as e:
         write(out, "quotes", code, "qfq", env("baostock kline", ok=False, err=repr(e)))
     try:                                                   # 复权因子:回测可复现的前提
-        rows = bs_rows(b.query_adjust_factor(code=c, start_date="2020-01-01", end_date=TODAY))
+        rows, flds = bs_rows(b.query_adjust_factor(code=c, start_date="2020-01-01", end_date=TODAY))
         write(out, "quotes", code, "adjfactor",
               env("baostock query_adjust_factor", data=rows,
-                  params={"note": "目标价/成本价与日线必须换算到同一复权基准再比"}))
+                  params={"fields": flds,
+                          "note": "目标价/成本价与日线必须换算到同一复权基准再比"}))
     except Exception as e:
         write(out, "quotes", code, "adjfactor", env("baostock query_adjust_factor", ok=False, err=repr(e)))
 
