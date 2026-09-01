@@ -185,14 +185,32 @@ def build() -> list[tuple[Probe, callable]]:
               "https://data.eastmoney.com/jgdy/"),
         _em_survey)
 
-    add(Probe("3 财务与筹码(东财)", "股东户数", "滞后", "户数 / 户均持股 / 环比",
-              "efinance get_latest_holder_number", "https://data.eastmoney.com/gdhs/"),
-        lambda p: _ef(p, "get_latest_holder_number"))
+    # ⚠ efinance 的 get_latest_holder_number 参数是**日期不是代码**,而且它走 emh5 主机
+    #   时通时不通。按代码取股东户数正确的路子是 datacenter-web 的 RPT_HOLDERNUMLATEST。
+    add(Probe("3 财务与筹码(东财)", "股东户数", "滞后",
+              "户数 / 上期户数 / 变化率 / **END_DATE 数据截止日**(和实时价不是同一时点)",
+              "datacenter-web reportName=RPT_HOLDERNUMLATEST", "https://data.eastmoney.com/gdhs/"),
+        lambda p: http(p, url="http://datacenter-web.eastmoney.com/api/data/v1/get",
+                       params={"reportName": "RPT_HOLDERNUMLATEST", "columns": "ALL",
+                               "pageNumber": 1, "pageSize": 5, "source": "WEB", "client": "WEB",
+                               "filter": '(SECURITY_CODE="300502")'},
+                       headers={"User-Agent": UA, "Referer": "https://data.eastmoney.com/"},
+                       ok=lambda r: (lambda d: f"户数 {d['data'][0]['HOLDER_NUM']:,.0f} "
+                                               f"截止 {str(d['data'][0]['END_DATE'])[:10]}")(r.json()["result"])))
+
+    add(Probe("3 财务与筹码(东财)", "大宗交易", "同步", "折溢价与成交额 —— 大额换手的价格与对手方",
+              "datacenter-web reportName=RPT_BLOCKTRADE_STA", "https://data.eastmoney.com/dzjy/"),
+        lambda p: http(p, url="http://datacenter-web.eastmoney.com/api/data/v1/get",
+                       params={"reportName": "RPT_BLOCKTRADE_STA", "columns": "ALL",
+                               "pageNumber": 1, "pageSize": 5, "source": "WEB", "client": "WEB",
+                               "filter": '(SECURITY_CODE="300502")'},
+                       headers={"User-Agent": UA, "Referer": "https://data.eastmoney.com/"},
+                       ok=lambda r: f"{r.json()['result']['count']} 笔"))
 
     add(Probe("3 财务与筹码(东财)", "全市场季度业绩(基准率底料)", "滞后",
               "算「起始 ≥N% 增速四季后仍 ≥50%」的外部视角基准率",
               "efinance get_all_company_performance", "https://data.eastmoney.com/bbsj/"),
-        lambda p: _ef(p, "get_all_company_performance"))
+        lambda p: _ef(p, "get_all_company_performance", arg="2026-06-30"))
 
     add(Probe("3 财务与筹码(东财)", "现金流量表(A股 capex)", "滞后",
               "购建固定资产支付的现金 —— **面板厂(京东方/TCL)capex 就靠这个**",
@@ -289,10 +307,17 @@ def build() -> list[tuple[Probe, callable]]:
                        headers={"User-Agent": UA, "Referer": "https://data.eastmoney.com/"},
                        ok=lambda r: f"{len(r.json().get('data', {}).get('list', []))} 条"))
 
-    add(Probe("3b 事件面(缺口)", "个股资金流", "同步", "主力/大单/中单/小单净流入",
-              "akshare stock_individual_fund_flow",
+    # akshare 的 stock_individual_fund_flow 走 push2his,这台主机本机长期不稳。
+    # datacenter-web 上的 RPT_DMSK_TS_STOCKNEW 是同一件事的稳定路子。
+    add(Probe("3b 事件面(缺口)", "个股资金流", "同步", "各档(超大/大/中/小)净流入",
+              "datacenter-web reportName=RPT_DMSK_TS_STOCKNEW",
               "https://data.eastmoney.com/zjlx/300502.html"),
-        lambda p: _ak(p, "stock_individual_fund_flow", stock="300502", market="sz"))
+        lambda p: http(p, url="http://datacenter-web.eastmoney.com/api/data/v1/get",
+                       params={"reportName": "RPT_DMSK_TS_STOCKNEW", "columns": "ALL",
+                               "pageNumber": 1, "pageSize": 5, "source": "WEB", "client": "WEB",
+                               "filter": '(SECURITY_CODE="300502")'},
+                       headers={"User-Agent": UA, "Referer": "https://data.eastmoney.com/"},
+                       ok=lambda r: f"{r.json()['result']['count']} 日"))
 
     add(Probe("3b 事件面(缺口)", "龙虎榜", "同步", "游资/机构席位买卖",
               "akshare stock_lhb_detail_em", "https://data.eastmoney.com/stock/lhb.html"),
@@ -470,6 +495,9 @@ def _ak(p: Probe, fn_name, _retried=False, **kw):
 
 
 def _ef(p: Probe, fn_name, arg="300502"):
+    """⚠ efinance 各接口的参数语义不统一:get_latest_holder_number 和
+    get_all_company_performance 收的是**日期**,不是股票代码。传错不报参数错,
+    报的是 'time data ... does not match format' —— 看起来像数据源坏了。"""
     t0 = time.time()
     try:
         import efinance as ef

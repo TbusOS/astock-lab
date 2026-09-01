@@ -1,6 +1,6 @@
 # 数据源清单
 
-> 实测日期 **2026-09-01** · 41 条,通 37 条 · 探测机器:MacBook(Clash TUN 开着)
+> 实测日期 **2026-09-02** · 42 条,通 **41** 条 · 探测机器:MacBook(Clash TUN 开着)
 >
 > **这份清单的表格不是手写的,是每次真调一次生成的。**
 > 手写的数据源清单必然过期 —— 2026-09-01 就发现三条记成「拿不到」的
@@ -107,16 +107,17 @@ tools/data_digest.py --code 300502 --overseas --pdf                  # 出文档
 |---|---|---|---|---|
 | [**datacenter-web 主机**](http://datacenter-web.eastmoney.com/api/data/v1/get) ⭐ | — | 报表类数据总入口 | `requests` | ✅ 通 · 有数据 |
 | [**机构调研 RPT_ORG_SURVEYNEW**](https://data.eastmoney.com/jgdy/) | **领先** | 接待机构数 / 会议形式 / 时间 / 接待人。异常时点(周末夜间)+ 家数骤变是信号 | `datacenter-web reportName=RPT_ORG_SURVEYNEW` | ✅ 通 · 共 819 次,最近接待 145 家 |
-| [**股东户数**](https://data.eastmoney.com/gdhs/) | 滞后 | 户数 / 户均持股 / 环比 | `efinance get_latest_holder_number` | ❌ FAIL · ValueError: time data '300502' does not match format '%Y |
-| [**全市场季度业绩(基准率底料)**](https://data.eastmoney.com/bbsj/) | 滞后 | 算「起始 ≥N% 增速四季后仍 ≥50%」的外部视角基准率 | `efinance get_all_company_performance` | ❌ FAIL · JSONDecodeError: Expecting value: line 1 column 1 (char  |
-| [**现金流量表(A股 capex)**](https://emweb.securities.eastmoney.com/PC_HSF10/NewFinanceAnalysis/Index?code=SZ000725) | 滞后 | 购建固定资产支付的现金 —— **面板厂(京东方/TCL)capex 就靠这个** | `akshare stock_cash_flow_sheet_by_report_em` | ❌ FAIL · SSLError: HTTPSConnectionPool(host='emweb.securities.eas |
+| [**股东户数**](https://data.eastmoney.com/gdhs/) | 滞后 | 户数 / 上期户数 / 变化率 / **END_DATE 数据截止日**(和实时价不是同一时点) | `datacenter-web reportName=RPT_HOLDERNUMLATEST` | ✅ 通 · 户数 257,067 截止 2026-06-30 |
+| [**大宗交易**](https://data.eastmoney.com/dzjy/) | 同步 | 折溢价与成交额 —— 大额换手的价格与对手方 | `datacenter-web reportName=RPT_BLOCKTRADE_STA` | ✅ 通 · 122 笔 |
+| [**全市场季度业绩(基准率底料)**](https://data.eastmoney.com/bbsj/) | 滞后 | 算「起始 ≥N% 增速四季后仍 ≥50%」的外部视角基准率 | `efinance get_all_company_performance` | ✅ 通 · 5566 行 |
+| [**现金流量表(A股 capex)**](https://emweb.securities.eastmoney.com/PC_HSF10/NewFinanceAnalysis/Index?code=SZ000725) | 滞后 | 购建固定资产支付的现金 —— **面板厂(京东方/TCL)capex 就靠这个** | `akshare stock_cash_flow_sheet_by_report_em` | ✅ 通 · 102 行 × 254 列 |
 
 ### 3b 事件面(缺口)
 
 | 数据源(点名字进官方页) | 属性 | 拿到什么 | 怎么拿 | 实测 |
 |---|---|---|---|---|
 | [**上市公司公告**](https://np-anotice-stock.eastmoney.com/api/security/ann) | **领先** | 中标 / 重大合同 / 框架协议 / 订单 —— 对订单驱动的公司(杰瑞、深科达)比财报更直接。**PIT 纪律:只在公告日之后生效** | `东财 np-anotice-stock` | ✅ 通 · 5 条 |
-| [**个股资金流**](https://data.eastmoney.com/zjlx/300502.html) | 同步 | 主力/大单/中单/小单净流入 | `akshare stock_individual_fund_flow` | ❌ FAIL · ProxyError: HTTPSConnectionPool(host='push2his.eastmoney |
+| [**个股资金流**](https://data.eastmoney.com/zjlx/300502.html) | 同步 | 各档(超大/大/中/小)净流入 | `datacenter-web reportName=RPT_DMSK_TS_STOCKNEW` | ✅ 通 · 1 日 |
 | [**龙虎榜**](https://data.eastmoney.com/stock/lhb.html) | 同步 | 游资/机构席位买卖 | `akshare stock_lhb_detail_em` | ✅ 通 · 1633 行 × 21 列 |
 
 ### 4 杠杆与解禁
@@ -150,7 +151,7 @@ tools/data_digest.py --code 300502 --overseas --pdf                  # 出文档
 | 数据源(点名字进官方页) | 属性 | 拿到什么 | 怎么拿 | 实测 |
 |---|---|---|---|---|
 | [**新浪外盘期货 油价**](https://hq.sinajs.cn/list=hf_CL,hf_OIL) | **领先** | WTI / 布伦特 | `tools/commodity.py` | ✅ 通 · 有报价 |
-| [**北美钻机数(Baker Hughes 转载)**](https://api.oilpriceapi.com/v1/prices/latest) | **领先** | 作业量的既成事实 —— 油价和 capex 只是意愿,钻机数是已发生 | `tools/rigcount.py` | ✅ 通 · 1,880,338B |
+| [**北美钻机数(Baker Hughes 转载)**](https://api.oilpriceapi.com/v1/prices/latest) | **领先** | 作业量的既成事实 —— 油价和 capex 只是意愿,钻机数是已发生 | `tools/rigcount.py` | ✅ 通 · 1,880,339B |
 | [**人民币中间价(CFETS)**](https://www.chinamoney.com.cn/ags/ms/cm-u-bk-ccpr/CcprHisNew) | 同步 | 出口占比高的公司的汇兑影响。**pageSize ≥ 100 返回 403 是分页超限不是被封** | `skills/astock-quote/scripts/fx.py` | ✅ 通 · 20 条 |
 
 ### 8 宏观
@@ -160,22 +161,25 @@ tools/data_digest.py --code 300502 --overseas --pdf                  # 出文档
 | [**中美国债收益率**](https://data.eastmoney.com/cjsj/zmgzsyl.html) | 领先 | 贴现率 —— 高估值成长股的分母 | `akshare bond_zh_us_rate` | ✅ 通 · 22 行 × 13 列 |
 | [**全球指数**](https://quote.eastmoney.com/center/gridlist.html#global_asia) | 同步 | 外围市场温度 | `akshare index_global_spot_em` | ❌ FAIL · JSONDecodeError: Expecting value: line 1 column 1 (char  |
 
-> ⭐ = 必需源(缺了做不了基础分析)。本次实测 41 条,通 36 条。
+> ⭐ = 必需源(缺了做不了基础分析)。本次实测 42 条,通 41 条。
 
 ---
 
-## 三、本次没通的 4 条:原因与处置
+## 三、本次没通的 1 条
 
-| 条目 | 状态 | 原因 | 处置 |
-|---|---|---|---|
-| 股东户数 · 全市场季度业绩 | ◇ 缺包 | 本机(MacBook)没装 `efinance`;company-linux 与 mac mini 上有 | `pip install efinance`,不是源的问题 |
-| 个股资金流 | ❌ | 走 `push2his.eastmoney.com` —— **这台主机本机长期不稳**,和 `datacenter-web` 是两回事 | 换 `datacenter-web` 上的资金流报表,或接受降级 |
-| 全球指数 | ❌ | 同样在东财 `push2` 系主机上,间歇性返回非 JSON | 定时抓落库,不要请求时现抓 |
+| 条目 | 原因 | 处置 |
+|---|---|---|
+| 全球指数 `index_global_spot_em` | 走东财 `push2` 系主机,间歇返回非 JSON | 定时抓落库,不要请求时现抓 |
 
 > **东财要按主机分开看,不能按域名一刀切**:`datacenter-web`(报表类)本机稳定;
-> `push2` / `push2his`(行情与资金流类)时通时不通。同一个 `eastmoney.com` 下面
-> 两种行为。2026-08-27 实测 36 个接口 26 个通,分界就在主机而不在协议 ——
-> `datacenter-web` 走明文 http 反而一直稳,`push2his` 走 https 照样不通。
+> `push2` / `push2his`(行情与资金流类)时通时不通。同一个 `eastmoney.com` 下两种行为。
+> 2026-09-02 把股东户数和个股资金流从 efinance/push2his 改到 `datacenter-web` 的
+> `RPT_HOLDERNUMLATEST` / `RPT_DMSK_TS_STOCKNEW` 之后,两条都稳定了。
+
+> ⚠ 另一类容易误判成「数据源坏了」的:**efinance 各接口的参数语义不统一** ——
+> `get_latest_holder_number` 和 `get_all_company_performance` 收的是**日期**不是股票代码。
+> 传错时报的是 `time data '300502' does not match format '%Y-%m-%d'`,
+> 看起来像源出问题,其实是调用方写错。
 
 ## 四、确认拿不到的(附证据日期,别再重复试)
 
