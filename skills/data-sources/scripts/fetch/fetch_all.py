@@ -57,6 +57,7 @@ for _k in ("http_proxy", "https_proxy", "HTTP_PROXY", "HTTPS_PROXY",
 socket.setdefaulttimeout(45)
 
 TODAY = date.today().isoformat()
+RUN_START = datetime.now().isoformat(timespec="seconds")   # 区分本轮与同日更早的残留
 
 # ── 海外上下游:按赛道分组 ────────────────────────────────────────────
 # 这不是「参考」,是领先指标。改这张表 = 改我们的领先指标口径。
@@ -289,6 +290,22 @@ def _em(out, group, code, name, report, flt=None, size=60, note="", extra=None):
         write(out, group, code, name, env(f"东财 {report}", ok=False, err=repr(e)))
 
 
+def retry(fn, n=2, wait=1.5):
+    """网络类抖动重试。SSL/连接/代理这些在本机时通时不通,一次失败就记 FAIL
+    会让清单看起来比实际差(probe_all_sources 里已经有同样的处理)。"""
+    last = None
+    for i in range(n):
+        try:
+            return fn()
+        except Exception as e:
+            last = e
+            if not any(k in type(e).__name__ for k in ("SSL", "Connection", "Proxy", "Timeout")):
+                raise
+            if i < n - 1:
+                time.sleep(wait)
+    raise last
+
+
 def fetch_chips(code, out):
     """筹码与杠杆。**优先走 datacenter-web** —— 2026-09-01 实测:
     efinance 的 get_latest_holder_number 参数是**日期不是代码**(传代码报
@@ -317,7 +334,7 @@ def fetch_chips(code, out):
               env("akshare stock_restricted_release_detail_em", ok=False, err=repr(e)))
     try:                                   # 融资融券
         fn = "stock_margin_detail_sse" if code[0] == "6" else "stock_margin_detail_szse"
-        df = getattr(ak, fn)(date=(date.today()).strftime("%Y%m%d"))
+        df = retry(lambda: getattr(ak, fn)(date=(date.today()).strftime("%Y%m%d")))
         col = next((c for c in df.columns if "代码" in c or "证券代码" in c), None)
         if col is not None:
             df = df[df[col].astype(str).str.zfill(6) == code]
@@ -495,19 +512,29 @@ def health(out: Path):
                 rows.append({"group": p.relative_to(out).parts[0],
                              "key": p.parent.name, "source": src,
                              "ok": e.get("ok"), "rows": e.get("rows"),
+                             "fetched_at": e.get("fetched_at"),
+                             "stale": (e.get("fetched_at") or "") < RUN_START,
                              "error": (e.get("error") or "")[:90]})
         except Exception:
             pass
     (out / "meta").mkdir(parents=True, exist_ok=True)
     (out / "meta" / f"{TODAY}.json").write_text(
         json.dumps(rows, ensure_ascii=False, indent=1), encoding="utf-8")
-    ok = sum(1 for r in rows if r["ok"])
+    cur = [r for r in rows if not r["stale"]]
+    ok = sum(1 for r in cur if r["ok"])
+    stale_bad = [r for r in rows if r["stale"] and not r["ok"]]
     print(f"\n健康汇总 → {out/'meta'/(TODAY+'.json')}")
-    print(f"  共 {len(rows)} 条:成功 {ok}、失败 {len(rows)-ok}")
-    for r in rows:
+    print(f"  本轮 {len(cur)} 条:成功 {ok}、失败 {len(cur)-ok}")
+    for r in cur:
         if not r["ok"]:
             print(f"    ✗ {r['group']}/{r['key']} · {r['source']} — {r['error']}")
-    return rows
+    if stale_bad:
+        # 同日更早那轮留下的失败条目。**不删** —— 失败要能被看见;
+        # 但也不能算进本轮,否则改好了代码,健康看起来还是坏的。
+        print(f"  另有 {len(stale_bad)} 条是**同日更早那轮**的失败残留(可能已被新代码取代):")
+        for r in stale_bad:
+            print(f"    · {r['group']}/{r['key']} · {r['source']}")
+    return cur
 
 
 def main() -> int:
