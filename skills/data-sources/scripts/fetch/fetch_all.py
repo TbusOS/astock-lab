@@ -391,9 +391,55 @@ def fetch_chips(code, out):
               env("efinance get_top10_stock_holder_info", ok=False, err=repr(e)))
 
 
+def fetch_overseas_facts(out, only=None):
+    """海外上下游的**事实**:季度利润表 + 季度现金流量表(10-Q 转录)。
+
+    和 fetch_overseas 分开的理由:那个抓的是 yfinance analyst,
+    也就是**分析师预测** —— 只能当作"市场怎么想"的记录,不能进我们的模型。
+    这个抓的是公司报表里的实际数字,尤其是**资本开支**:
+    云厂季度 capex 是光模块需求的直接来源,而且是已经花掉的钱,不是谁的观点。
+
+    实测 2026Q2:MSFT 358 亿、GOOGL 449 亿、META 301 亿美元,
+    三家合计同比 +98%;同期新易盛营收同比 +96.9%。这条对应关系
+    就是从这里算出来的,不需要引用任何研报。
+    """
+    import yfinance as yf
+    WANT_CF = ["Capital Expenditure", "Free Cash Flow", "Operating Cash Flow"]
+    WANT_IS = ["Total Revenue", "Gross Profit", "Operating Income", "Net Income"]
+    for grp, tickers in PEERS.items():
+        if only and only != grp:
+            continue
+        for tk in tickers:
+            try:
+                t = yf.Ticker(tk)
+                cf, ic = t.quarterly_cashflow, t.quarterly_income_stmt
+                def pick(df, want):
+                    if df is None or df.empty:
+                        return None
+                    return {str(r): {str(c)[:10]: (None if v != v else float(v))
+                                     for c, v in zip(df.columns, df.loc[r].values)}
+                            for r in want if r in df.index}
+                data = {"季度现金流": pick(cf, WANT_CF), "季度利润表": pick(ic, WANT_IS)}
+                n = len((data["季度现金流"] or {}).get("Capital Expenditure", {}))
+                write(out, "overseas", tk, "季度财报",
+                      env("yfinance quarterly_cashflow + quarterly_income_stmt(10-Q 转录)",
+                          url=f"https://finance.yahoo.com/quote/{tk}/cash-flow",
+                          params={"sector_group": grp}, data=data,
+                          ok=bool(data["季度现金流"] or data["季度利润表"]), rows=n))
+                print(f"    · {grp:<14} {tk:<6} 季度资本开支 {n} 期")
+            except Exception as e:
+                write(out, "overseas", tk, "季度财报",
+                      env("yfinance quarterly 财报", ok=False, err=repr(e)))
+                print(f"    · {grp:<14} {tk:<6} 失败 {type(e).__name__}")
+            time.sleep(0.4)
+
+
 def fetch_overseas(out, only=None):
-    """海外上下游。**这是领先指标不是背景** —— 云厂 capex 决定光模块需求,
-    评级变动方向比目标价绝对值有用得多。"""
+    """海外上下游的**市场预期**:目标价、评级变动、一致预期。
+
+    ⚠ 这一整组是**别人的预测**,只作为"市场怎么想"的记录,
+    **不进我们自己的模型**。事实那一半在 fetch_overseas_facts。
+    """
     import yfinance as yf
     for grp, tickers in PEERS.items():
         if only and only != grp:
@@ -617,6 +663,7 @@ def main() -> int:
 
     if a.peers:
         print("\n[海外上下游]")
+        fetch_overseas_facts(out)
         fetch_overseas(out)
     if a.macro:
         print("\n[宏观]")
