@@ -159,9 +159,9 @@ def write(raw: Path, code: str, a: dict, f: dict, position: dict,
     dropped = len(rows) - len(kept)
     rid = max([r.get("id", 0) for r in rows], default=0) + 1
 
-    spot = None
-    if d.get("ok"):
-        spot = d["三情景"]["现价"]
+    # ⚠ **不给动作的记录也要有价。** 那条记录记的是「这一天我们看了它,
+    #   而且决定不给动作」—— 没有当时的价,下次回来连「那天它多少钱」都答不上来。
+    spot = d["三情景"]["现价"] if d.get("ok") else d.get("现价")
     probs, px, ev = None, None, None
     if d.get("ok"):
         probs = {k: round(v, 4) for k, v in d["概率"]["probs"].items()}
@@ -185,6 +185,9 @@ def write(raw: Path, code: str, a: dict, f: dict, position: dict,
         "thesis": make_thesis(a, f, cash),
         "falsify": make_falsify(a, f, f.get("营收区间"), f.get("归母净利区间"), gm_min),
         "check_date": d.get("复核日"),
+        # 「这次为什么没给动作」。**空字符串和「不给动作」是两回事** ——
+        # 前者是正常给了动作,后者要在复核时知道当初卡在哪一步。
+        "no_action_why": "" if d.get("ok") else (d.get("why") or "未说明"),
         "status": "open",
     }
     save(p, kept + [rec])

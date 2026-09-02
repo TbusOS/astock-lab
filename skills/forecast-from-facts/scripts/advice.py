@@ -235,8 +235,8 @@ def render(a: dict, v: dict, f: dict, position: dict, n: int, L: list) -> None:
       · **具体怎么做** —— 建议对不对是一回事,这个账户能不能照做是另一回事
       · **对照:旧的三维打分说什么** —— 两边给出相反结论时,那本身是个信号
     """
-    import decision
-    decision.render(a["决策"], v, f, position, n, L)
+    import decision_render
+    decision_render.render(a["决策"], v, f, position, n, L)
     _how_to(a, v, f, position, L)
     _old_score(a, L)
 
@@ -277,8 +277,14 @@ def _how_to(a: dict, v: dict, f: dict, position: dict, L: list) -> None:
                      f"({sc['bear']['涨跌']:+.1f}%)倒推的 —— 减到这里,"
                      f"bear 真的兑现时亏掉的净资产才在你设定的可承受线内。")
         else:
-            L.append("- **先减一半**,剩下的等下个季报再定 —— "
-                     "我们的判断有明确的验证时点,不用现在就赌到底")
+            import decision
+            mvp = position.get("market_value")
+            L.append(f"- **先减 {decision.TRIM_FRACTION:.0%}**"
+                     + (f"(现市值 {mvp:,.0f} → 卖 "
+                        f"{mvp * decision.TRIM_FRACTION:,.0f} 元)" if mvp else "")
+                     + ",剩下的等下个季报再定 —— 我们的判断有明确的验证时点,"
+                       "不用现在就赌到底。**账户文档第 7 节用的是同一个比例**"
+                       "(`decision.TRIM_FRACTION`),两处不会分叉。")
         if position.get("margin_debt"):
             L.append(f"- **这只带 {position['margin_debt']:,.0f} 元融资负债**,"
                      f"减仓换来的现金优先还债,不要转去买别的 —— "
@@ -308,6 +314,16 @@ def _how_to(a: dict, v: dict, f: dict, position: dict, L: list) -> None:
                  "也就是「按我们自己的概率算,这个位置买进去平均赚不到什么」。")
         L.append(f"- 想加的话,**等到 base 价位 {sc['base']['价']:,.0f} 元以下**"
                  f"(现价 {px:,.2f})—— 那时候同样的三个情景会算出一个更正的期望值。")
+    # ⚠ **bear 价位要印在这一节里,不能只放决策日志。** 只看「具体怎么做」的读者
+    #   拿不到那个数,而它是这份报告里唯一一个「跌到这里说明我们错了」的价格。
+    #   决策日志那句是写给复核用的措辞,不是写给下单用的。
+    L.append(f"- **bear 价位 {sc['bear']['价']:,.2f} 元"
+             f"({sc['bear']['涨跌']:+.1f}%)可以当止损参考。** "
+             f"它不是「跌到这里就该卖」的机械线,是**这套方法自己给的最悲观那一档**:"
+             f"跌破它说明我们对这只票的判断已经被价格否掉了,"
+             f"该做的是回到第 3 节重新看预测区间对不对,而不是继续等。"
+             f"它同时也是第 11.5 节仓位上限的分母 —— "
+             f"上限就是按「万一跌到这里,最多亏净资产的百分之几」倒推的。")
     L.append(f"- **下一个决策点是 {d['复核日']}**({d['复核日是什么报']}"
              f"的法定披露截止日)。届时拿实际值对第 3 节的区间、第 10 节的条件、"
              f"第 11.1 的三个价位,逐条核。")

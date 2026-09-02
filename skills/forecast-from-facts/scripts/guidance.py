@@ -388,6 +388,39 @@ def upstream_capex(raw: Path, code: str) -> dict:
             "规则": DIRECTION_RULES["upstream_capex"]}
 
 
+def cloud_merged(cg: dict) -> dict | None:
+    """四家云厂的 capex 指引 → **一个**箭头。四家里 ↑ 多于 ↓ 记 ↑,反之 ↓,持平 →。
+
+    ⚠ 2026-09-02 改。原来是**四家各一票**,合起来能挪 20 个百分点的概率
+    (削到上限 15)。四家云厂的 capex 指引相关性接近 1 —— 同一轮 AI 投资周期、
+    同一批供应商、同一份宏观预算。**当四票投,等于一件事投四次。**
+    独立信号才能相加,不独立的信号相加只是把同一个赌注写成四行。
+
+    它在不适用时会怎样:一家都没抽到指引句时返回 None(整条不计入,
+    不当成「持平」——「缺数据」不等于「上游没动静」);
+    四家打平(比如 2 ↑ 2 ↓)时给 →,并把两边的家数写在理由里,
+    读者能看出这个 → 是「打平」而不是「都没动」。
+    """
+    rows = cg.get("rows") or []
+    if not rows:
+        return None
+    ups = [r["ticker"] for r in rows if r["方向"] == "↑"]
+    downs = [r["ticker"] for r in rows if r["方向"] == "↓"]
+    flats = [r["ticker"] for r in rows if r["方向"] == "→"]
+    mark = "↑" if len(ups) > len(downs) else "↓" if len(downs) > len(ups) else "→"
+    detail = (f"{len(ups)} 家上调({'/'.join(ups) or '—'})、"
+              f"{len(downs)} 家下调({'/'.join(downs) or '—'})、"
+              f"{len(flats)} 家没变({'/'.join(flats) or '—'})")
+    return {"来自": f"云厂 capex 指引({len(rows)} 家合成 1 票)",
+            "方向": mark,
+            "理由": (f"{detail} → 取 **{mark}**。"
+                     f"**四家合成一票**:它们的 capex 指引相关性接近 1"
+                     f"(同一轮投资周期、同一批供应商、同一份宏观预算),"
+                     f"当四票投等于一件事投四次。"),
+            "成员": [{"ticker": r["ticker"], "方向": r["方向"], "理由": r["理由"]}
+                     for r in rows]}
+
+
 # ── 汇总:给决策层用 ─────────────────────────────────────────────────
 def build(raw: Path, code: str, which: list[str]) -> dict:
     """按行业要跑的那几项算,返回 {项目: 结果} + 一个 `方向` 列表给概率层。
@@ -406,10 +439,10 @@ def build(raw: Path, code: str, which: list[str]) -> dict:
         r = fns[k]()
         out["项目"][k] = r
         if k == "cloud_guidance":
-            # 四家云厂各算一个方向。**抽不到的那家不计入**,不当成「持平」
-            for row in r.get("rows", []):
-                out["方向"].append({"来自": f"{row['ticker']} capex 指引",
-                                    "方向": row["方向"], "理由": row["理由"]})
+            m = cloud_merged(r)
+            r["合成"] = m
+            if m:
+                out["方向"].append(m)
             for miss in r.get("缺", []):
                 out["跳过"].append(f"云厂指引 · {miss}")
         elif k == "oil_price":
@@ -462,17 +495,36 @@ def render(g: dict, n: str, L: list) -> None:
                          f"| [{r['会议']}]({r['url']})({r['抓于']}) |")
             pers = {_fmt_period(r["会议"]) for r in cg["rows"]}
             if len(pers) > 1:
+                newest = max(pers)
+                behind = [f"{r['ticker']}({_fmt_period(r['会议'])})"
+                          for r in cg["rows"] if _fmt_period(r["会议"]) < newest]
                 L.append("")
                 L.append(f"> ⚠ **这几家的纪要不是同一个季度的**"
                          f"({'、'.join(sorted(pers))})。指引给的通常是**全年**数,"
                          f"所以不同季度的口吻仍可比;但**上调/下调是相对各自的上一版"
                          f"说的** —— 一家在 Q1 上调、另一家在 Q2 上调,"
-                         f"不代表它们是同一时点的判断。哪一家落后了一个季度,"
-                         f"看上面「会议」那一列。")
+                         f"不代表它们是同一时点的判断。"
+                         + (f"落后的是 **{'、'.join(behind)}**,"
+                            f"最新的那批是 {newest}。" if behind else "")
+                         + "落后的那一家**不是我们漏抓了**:"
+                         "`fetch_all.py --transcripts-latest <TICKER>` 会去它的"
+                         "Motley Fool 个股页找最新一场,找不到就说明**那边还没发布**。"
+                         "2026-09-02 实测 GOOGL 就是这一种 —— "
+                         "站上最新仍是 2026-04-29 那场。")
             L.append("")
             for r in cg["rows"]:
                 L.append(f"- **{r['ticker']} {r['方向']}** —— {r['理由']}")
             L.append("")
+            m = cg.get("合成")
+            if m:
+                L.append(f"→ **这四家合起来只算一个箭头:{m['方向']}**。{m['理由']}")
+                L.append("")
+                L.append("> **为什么不是四票**:四家云厂的 capex 指引不是四条独立证据 —— "
+                         "同一轮 AI 投资周期、同一批供应商、同一份宏观预算,"
+                         "它们同向的概率本来就接近 1。当四票投,"
+                         "等于把同一个赌注写成四行,然后说「四条证据都支持」。"
+                         "**独立信号才能相加。**")
+                L.append("")
         else:
             L.append("**四家云厂一句指引都没抽到。**")
             L.append("")
@@ -568,11 +620,21 @@ def render(g: dict, n: str, L: list) -> None:
         for x in g["方向"]:
             L.append(f"| {x['来自']} | **{x['方向']}** | {x['理由']} |")
         L.append("")
+        import decision
         L.append(f"**{len(g['方向'])} 个指标:{g['↑数']} 个 ↑、"
                  f"{sum(1 for x in g['方向'] if x['方向'] == '→')} 个 →、"
                  f"{g['↓数']} 个 ↓,净 {g['净方向']:+d}。**"
-                 f"这个净方向会进第 11 节的概率修正:**每个 ↑ 把 5 个百分点"
-                 f"从 bear 挪到 bull,每个 ↓ 反过来,合计最多挪 15 个百分点。**")
+                 f"这个净方向会进第 11 节的概率修正:**每个 ↑ 把 "
+                 f"{decision.LEAD_STEP_PP:.0f} 个百分点从 bear 挪到 bull,"
+                 f"每个 ↓ 反过来,合计最多挪 {decision.LEAD_MAX_PP:.0f} 个百分点。**")
+        L.append("")
+        L.append("> ⚠ **这些箭头不按幅度加权,而且相互高度相关。** "
+                 "AMZN 把 2000 亿上调到 2200 亿(+10%)算一个 ↑,"
+                 "另一家中枢只抬了 1.9% 也算一个 ↑ —— 方向对了不等于幅度对了。"
+                 "而且这几项指标背后是**同一批客户的同一笔开支**"
+                 "(云厂的指引、同一批云厂已经花掉的钱、给这批客户供货的台湾厂商的月营收),"
+                 "不是几条互相独立的证据。合计上限从 15 降到 "
+                 f"{decision.LEAD_MAX_PP:.0f} 个百分点,就是为了这一点。")
     else:
         L.append("**一个方向标记都没有** —— 这一节的指标要么这个行业没登记,要么没抓到数据。"
                  "概率不做领先层修正。")

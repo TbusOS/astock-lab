@@ -21,6 +21,21 @@
 那不是运气好,是概率系统性给低了。所以这个脚本按**概率档位分组**统计,
 不看单条。样本不够时如实说样本不够,**不给一个「命中率 60%」的假结论**。
 
+## 第三件事:`--walkforward` 走前回测
+
+    backtest.py --walkforward --raw data/raw
+
+把时间倒回去,**只用截至目标季前一季的数据**跑同样这三个方法,再和后来真实
+发生的比。它回答的是上面两件事都回答不了的一个问题:**这套推法本身,
+在过去这些季度里到底准不准。** 结果写进 `<raw 的上一级>/backtest/
+revenue-summary.json`,报告第 3 节从那个文件读 —— **一个百分比都不写死在报告里**。
+
+两条纪律:
+  · **回测程序和生产程序是同一套代码**(直接调 `forecast.m_inventory` 等),
+    另写一份的话量的就不是生产上真正在跑的东西
+  · 截断要干净:最后一行的「下季营收÷期末存货」必须清成 None ——
+    那一格用的是目标季当季的营收,是未来信息,不清等于给回测开后门
+
 ## 它现在能做什么
 
 预测的都是 2026Q3,而三季报的法定披露截止日是 2026-10-31 —— **还没到**。
@@ -36,6 +51,7 @@ import argparse
 import datetime as dt
 import glob
 import json
+import statistics
 import sys
 from pathlib import Path
 
@@ -250,14 +266,184 @@ def build(raw: Path, pred_dir: Path, today: str | None = None) -> str:
     return "\n".join(L) + "\n"
 
 
+# ── 走前回测:把时间倒回去,只用截至目标季前一季的数据 ──────────────────
+WF_CODES = {"300308": "中际旭创", "300502": "新易盛", "300476": "胜宏科技",
+            "002353": "杰瑞股份", "688328": "深科达"}
+WF_FROM, WF_TO = "2024Q1", "2026Q2"
+
+
+def _targets():
+    out = []
+    for y in range(int(WF_FROM[:4]), int(WF_TO[:4]) + 1):
+        for q in ("Q1", "Q2", "Q3", "Q4"):
+            p = f"{y}{q}"
+            if WF_FROM <= p <= WF_TO:
+                out.append(p)
+    return out
+
+
+def truncate(qs, target: str):
+    """只留 t-1 及之前,并且**把最后一行的「下季营收÷期末存货」清成 None**。
+
+    那一格用的是 target 当季的营收 —— 是未来信息。生产上跑最新一季时它本来
+    就是 None(下季还没披露),不清掉等于给回测开了后门:
+    存货法会拿到一个当时不可能有的比值,算出来的成绩是假的。
+    """
+    ti = quarterly.qidx(target)
+    out = [dict(r) for r in qs if quarterly.qidx(r["period"]) < ti]
+    if out:
+        out[-1]["下季营收÷期末存货"] = None
+    return out
+
+
+def _agg(items):
+    """items: [(真实, low, high, mid)] → 命中率 / 偏差 / 宽度。"""
+    if not items:
+        return None
+    hit = sum(1 for r, lo, hi, m in items if lo <= r <= hi)
+    bias = [r / m - 1 for r, lo, hi, m in items if m]
+    width = [hi / lo - 1 for r, lo, hi, m in items if lo > 0]
+    return {"n": len(items), "命中": hit, "命中率": hit / len(items) * 100,
+            "平均偏差": statistics.mean(bias) * 100,
+            "中位绝对偏差": statistics.median([abs(b) for b in bias]) * 100,
+            "中位宽度": statistics.median(width) * 100,
+            "偏高": sum(1 for r, lo, hi, m in items if r > hi),
+            "偏低": sum(1 for r, lo, hi, m in items if r < lo)}
+
+
+def walkforward(raw: Path) -> dict:
+    """跑一遍走前回测,返回可以直接落成 json 的汇总。
+
+    **回测程序和生产程序是同一套代码** —— 直接调 `forecast.m_inventory` /
+    `m_yoy` / `m_qoq` 和 `forecast.build` 里那段合成逻辑,不另写一份。
+    另写一份的话,量的就不是生产上真正在跑的东西。
+
+    窗口:生产代码写死 `since="2022"`,对 2026Q3 正好等于「往回四年」,
+    所以这里用「目标季年份 − 4」把同样长度的窗口平移到历史上。
+    """
+    import forecast as F
+    rows = []
+    for code, name in WF_CODES.items():
+        full = quarterly.build(raw, code, since="2015")["quarters"]
+        actual = {r["period"]: r["单季营收"] for r in full}
+        for t in _targets():
+            real = actual.get(t)
+            if real is None:
+                continue
+            qs_all = quarterly.build(raw, code,
+                                     since=str(int(t[:4]) - 4))["quarters"]
+            qs = truncate(qs_all, t)
+            if len(qs) < 4:
+                continue
+            ms = [F.m_inventory(qs, t), F.m_yoy(qs, t), F.m_qoq(qs, t)]
+            rec = {"code": code, "name": name, "target": t, "real": real,
+                   "methods": {m["name"]: m for m in ms}}
+            good = [m for m in ms if m.get("ok")]
+            rec["ngood"] = len(good)
+            if good:
+                lo = min(m["low"] for m in good)
+                hi = max(m["high"] for m in good)
+                rec["overlap"] = (max(m["low"] for m in good)
+                                  <= min(m["high"] for m in good))
+                rec["band"] = {"low": lo, "high": hi,
+                               "mid": statistics.median([m["mid"] for m in good])}
+            rows.append(rec)
+    # 汇总
+    band = [(r["real"], r["band"]["low"], r["band"]["high"], r["band"]["mid"])
+            for r in rows if r.get("band")]
+    contra = [(r["real"], r["band"]["low"], r["band"]["high"], r["band"]["mid"])
+              for r in rows if r.get("band") and not r.get("overlap")]
+    inter = []
+    for r in rows:
+        if not r.get("band") or not r.get("overlap"):
+            continue
+        good = [m for m in r["methods"].values() if m.get("ok")]
+        inter.append((r["real"], max(m["low"] for m in good),
+                      min(m["high"] for m in good), r["band"]["mid"]))
+    per_method = {}
+    for nm in ("存货法", "同比法", "环比法"):
+        items = [(r["real"], r["methods"][nm]["low"], r["methods"][nm]["high"],
+                  r["methods"][nm]["mid"])
+                 for r in rows if r["methods"].get(nm, {}).get("ok")]
+        per_method[nm] = _agg(items)
+    # ⚠ **宽度分档要在「宽窄都有」的样本上量。** 改成并集之后所有区间都变宽了,
+    #   <10% 那一档只剩一个样本 —— 拿它说事等于用一个点下结论。
+    #   所以这一张表用**旧的生产取法**(先交集、交集为空才退并集)那 46 个区间来算:
+    #   那批区间宽窄俱全,正是它证明了「窄区间几乎必错」,也正是它让我们改掉交集。
+    old = []
+    for r in rows:
+        if not r.get("band"):
+            continue
+        if r.get("overlap"):
+            good = [m for m in r["methods"].values() if m.get("ok")]
+            old.append((r["real"], max(m["low"] for m in good),
+                        min(m["high"] for m in good), r["band"]["mid"]))
+        else:
+            old.append((r["real"], r["band"]["low"], r["band"]["high"],
+                        r["band"]["mid"]))
+    buckets = [("<10%", 0, 10), ("10%~25%", 10, 25),
+               ("25%~50%", 25, 50), (">50%", 50, 1e9)]
+    by_width = []
+    for lab, a, b in buckets:
+        items = [x for x in old
+                 if x[1] > 0 and a <= (x[2] / x[1] - 1) * 100 < b]
+        g = _agg(items)
+        if g:
+            by_width.append({"档": lab, "n": g["n"], "命中": g["命中"],
+                             "命中率": g["命中率"]})
+    # 大幅低估的样本:实际比中枢高 50% 以上。回测说它们**全在增速跳升那一季**。
+    big = [{"code": r["code"], "name": r["name"], "target": r["target"],
+            "偏差": (r["real"] / r["band"]["mid"] - 1) * 100}
+           for r in rows if r.get("band") and r["band"]["mid"]
+           and r["real"] / r["band"]["mid"] - 1 > 0.5]
+    return {"生成于": dt.date.today().isoformat(),
+            "窗口": "目标季年份 − 4(和生产的 since=2022 等长)",
+            "样本": {"票数": len(WF_CODES), "季度": f"{WF_FROM}~{WF_TO}",
+                     "样本数": len(rows), "有区间": len(band)},
+            "并集": _agg(band), "交集(仅重叠的)": _agg(inter),
+            "旧生产取法(先交集空了退并集)": _agg(old),
+            "按宽度用的样本": "旧的生产取法那 46 个区间(宽窄俱全);"
+                              "并集之后区间普遍变宽,<10% 那一档只剩 1 个样本,"
+                              "量不出宽度和命中率的关系",
+            "矛盾退并集": _agg(contra),
+            "方法": per_method, "按宽度": by_width,
+            "拐点": {"说明": "实际值比中枢高 50% 以上的季度", "样本": big},
+            "逐季": [{"code": r["code"], "name": r["name"], "target": r["target"],
+                      "可用方法数": r["ngood"], "重叠": r.get("overlap"),
+                      "real": r["real"],
+                      "band": r.get("band")} for r in rows]}
+
+
 def main() -> int:
     ap = argparse.ArgumentParser(description=__doc__,
                                  formatter_class=argparse.RawDescriptionHelpFormatter)
     ap.add_argument("--raw", default="data/raw")
     ap.add_argument("--predictions", default="private/predictions")
     ap.add_argument("--md", help="把结果写到这个文件")
+    ap.add_argument("--walkforward", action="store_true",
+                    help="跑走前回测,把汇总写进 `<raw 的上一级>/backtest/"
+                         "revenue-summary.json`(报告第 3 节读它)")
+    ap.add_argument("--out", help="走前回测汇总写到哪;默认 "
+                                  "`<raw 的上一级>/backtest/revenue-summary.json`")
     a = ap.parse_args()
-    md = build(Path(a.raw), Path(a.predictions))
+    raw = Path(a.raw)
+    if a.walkforward:
+        s = walkforward(raw)
+        out = Path(a.out) if a.out else raw.parent / "backtest" / "revenue-summary.json"
+        out.parent.mkdir(parents=True, exist_ok=True)
+        out.write_text(json.dumps(s, ensure_ascii=False, indent=1), encoding="utf-8")
+        u = s["并集"]
+        print(f"→ {out}")
+        print(f"   样本 {s['样本']['样本数']} 个「票 × 季度」,{u['n']} 个有区间")
+        print(f"   并集命中 {u['命中']}/{u['n']} = {u['命中率']:.0f}%,"
+              f"中枢误差中位 {u['中位绝对偏差']:.1f}%,"
+              f"平均偏差 {u['平均偏差']:+.1f}%,中位宽度 {u['中位宽度']:.0f}%")
+        for nm, m in s["方法"].items():
+            if m:
+                print(f"   {nm}:通过自检 {m['n']} 次,命中 {m['命中率']:.0f}%,"
+                      f"中枢误差中位 {m['中位绝对偏差']:.1f}%")
+        return 0
+    md = build(raw, Path(a.predictions))
     if a.md:
         Path(a.md).parent.mkdir(parents=True, exist_ok=True)
         Path(a.md).write_text(md, encoding="utf-8")

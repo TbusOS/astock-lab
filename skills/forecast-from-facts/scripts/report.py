@@ -59,6 +59,7 @@ import outside_view
 import quarterly
 import sector_rules
 import sections_position as pos
+import report_market as rm
 import source_catalog as catalog
 import valuation
 
@@ -81,22 +82,29 @@ def yi(v, nd=1):
     return "—" if v is None else f"{v / 1e8:,.{nd}f}"
 
 
-def market_view(raw: Path, code: str) -> dict:
-    """市场怎么想。**整节都是别人的预测**,只作对照,不进上面任何一步。"""
-    out = {"一致预期": None, "评级": [], "研报": [], "来源": {}}
-    for env in envs(newest(raw, f"consensus/{code}/*-ths.json")).values():
-        if env.get("ok") and env.get("data"):
-            out["一致预期"] = env["data"]
-            out["来源"]["一致预期"] = env.get("url") or "同花顺 stock_profit_forecast_ths"
-    for env in envs(newest(raw, f"ratings/{code}/*-cninfo.json")).values():
-        if env.get("ok") and env.get("data"):
-            out["评级"] = env["data"]
-            out["来源"]["评级"] = env.get("url") or "巨潮 stock_rank_forecast_cninfo"
-    for env in envs(newest(raw, f"research/{code}/*-list.json")).values():
-        if env.get("ok") and env.get("data"):
-            out["研报"] = env["data"]
-            out["来源"]["研报"] = env.get("url") or "东财 reportapi"
-    return out
+def _low_conf_note(d: dict, L: list) -> None:
+    """确信度很低却给出减仓/清仓时,**在结论段就把这层意思说清楚**。
+
+    「确信度 0、动作清仓」这个组合读起来像「我们很确定它会跌」,而实际意思相反:
+    确信度低说明**我们对自己这个判断没什么把握**,动作是减/清仓的理由是
+    「没把握守住,而且估值在自己历史极值」。这两句给读者的印象差得很远,
+    以前它埋在 11.4 节,读者要翻十页才拼得出来。
+
+    它在不适用时会怎样:确信度拿到一半以上、或者动作不是减/清仓时,这一段不出现。
+    """
+    conf = d.get("确信度") or {}
+    act = d.get("动作") or ""
+    if not act.startswith(("清仓", "减仓")) or conf.get("比例", 1) > 0.5:
+        return
+    L.append(f"> ⚠ **确信度只有 {conf['分']}/{conf['满分']}"
+             + (f"(分母是本行业可得分,不是 3)" if conf["满分"] < 3 else "")
+             + f" —— 这个"
+             f"「{act}」不是「我们确定它会跌」,是「我们没把握它守得住,"
+             f"而且它的估值在自己历史的极值附近」。** 两句话给人的印象差很远:"
+             f"前者听起来像一个强判断,后者说的是**我们对自己这个判断都没什么把握**。"
+             f"确信度低的时候,期望值本身的误差也大。"
+             f"确信度是怎么算出来的、缺的那几分缺在哪,见第 11.4 节。")
+    L.append("")
 
 
 def sec_conclusion(v, f, mkt, name, code, L, cost=None, adv=None):
@@ -113,13 +121,20 @@ def sec_conclusion(v, f, mkt, name, code, L, cost=None, adv=None):
     if d.get("ok"):
         L.append(f"# → **{adv['动作']}**")
         L.append("")
-        L.append(f"**期望值 {d['EV']:+.1f}%**　·　确信度 **{d['确信度']['分']}/3"
-                 f"({d['确信度']['档']})**　·　复核日 **{d['复核日']}**"
-                 f"({d['复核日是什么报']})")
+        cf = d["确信度"]
+        # ⚠ **分母是「本行业可得分」,不是固定的 3。** 印成 `1/3(高)` 会让人读不懂:
+        #   得分看着只有三分之一,档位却是「高」。第一次出现的地方要把分母解释掉。
+        L.append(f"**期望值 {d['EV']:+.1f}%**　·　确信度 "
+                 f"**{cf['分']}/{cf['满分']}({cf['档']})**"
+                 + (f"(分母是**本行业可得分** —— 这个行业只登记了 {cf['满分']} 个"
+                    f"可检验项,拿不到的那几条不计分也不扣分,见第 11.4 节)"
+                    if cf["满分"] < 3 else "")
+                 + f"　·　复核日 **{d['复核日']}**({d['复核日是什么报']})")
         L.append("")
         if adv.get("档位理由"):
             L.append(adv["档位理由"])
             L.append("")
+        _low_conf_note(d, L)
         sc = d["三情景"]["情景"]
         pr = d["概率"]["probs"]
         L.append("| 情景 | 价位 | 相对现价 | 概率 |")
@@ -130,7 +145,7 @@ def sec_conclusion(v, f, mkt, name, code, L, cost=None, adv=None):
         L.append(f"| **期望值** | | **{d['EV']:+.1f}%** | 三行加权 |")
         L.append("")
         L.append(f"**动作只由期望值决定**(≤−20% 清仓 · −20~−8% 减仓 · "
-                 f"−8~+8% 持有不加仓 · +8~+20% 持有 · >+20% 且确信度 ≥2 可加仓);"
+                 f"−8~+8% 持有不加仓 · +8~+20% 持有 · >+20% 且确信度比例 ≥ 2/3 可加仓);"
                  f"确信度和仓位上限只管**拿多少**,不管拿不拿。"
                  f"**四步概率怎么来的、每一步动了多少,第 11.2 整张印出来。**")
         L.append("")
@@ -195,7 +210,11 @@ def sec_conclusion(v, f, mkt, name, code, L, cost=None, adv=None):
         L.append(f"- 这只票该看的是 **PB**:现在 {pb['现值']:.2f}"
                  f"(在自己历史的 {pb['现值分位']:.0f}% 分位),p25={pb['p25']:.2f}、"
                  f"p50={pb['p50']:.2f}、p75={pb['p75']:.2f}。"
-                 f"三情景的价位就是按它算的。")
+                 # ⚠ **「该用哪把尺」和「这次用没用上」是两件事。** 不给动作的时候
+                 #   三情景根本没算,还写「价位就是按它算的」就是一句假话。
+                 + ("三情景的价位就是按它算的。" if d.get("ok") else
+                    "**但这次没有用它算价位** —— 上面说了为什么不给动作,"
+                    "这个分位只当背景。"))
     cp = f.get("产业链位置")
     if cp:
         L.append(f"- 相对{cp['上游']},这家公司的增速倍数在 {cp['期间']} 之间从 "
@@ -211,13 +230,22 @@ def sec_conclusion(v, f, mkt, name, code, L, cost=None, adv=None):
     n = f["可用方法数"]
     ok_names = [m["name"] for m in f["methods"] if m.get("ok")]
     bad_names = [m["name"] for m in f["methods"] if not m.get("ok")]
+    # ⚠ **这一句必须看 `方法一致`,不能只数个数。** 胜宏 3 个方法都通过自检、
+    #   区间却不重叠,原来这里照样写「多个方法互相印证」,而同一份报告第 3 节写的是
+    #   「互相矛盾」、11.4 节给 0 分。**第 1 节是读者第一眼看的地方,而它说的是反话。**
+    consistent = f.get("方法一致", True)
     L.append(f"- 预测的把握程度:**{n}/3 个方法适用**"
              + (f"({'、'.join(ok_names)})" if ok_names else "")
              + (f",不适用的是 {'、'.join(bad_names)}" if bad_names else "")
              + "。"
              + ("三个都不适用,下季营收我们没有可靠的推法。" if n == 0 else
                 "只有一个,没有第二个来交叉验证,区间要打折看。" if n == 1 else
-                "多个方法互相印证。"))
+                "多个方法适用而且区间重叠。" if consistent else
+                f"**{n} 个方法适用,但它们给的区间不重叠** —— "
+                f"这不是互相印证,是这只票当期的形状不稳定,"
+                f"区间因此取并集、开得更宽。")
+             + (f"区间宽度 {f['区间宽度pct']:.0f}%。"
+                if f.get("区间宽度pct") is not None else ""))
     L.append("  三个方法分别是**存货法**(看供给侧已经花出去的钱)、"
              "**同比法**(看需求侧的增长趋势)、**环比法**(看这门生意的季节形状),"
              "每个的算式和失效条件见第 3 节。")
@@ -345,6 +373,27 @@ def sec_valuation(v, f, L, sector=None, rules=None):
              "所以这条带回答的是:**市场当年为这家公司这四个季度的真实利润,"
              "实际付了多少倍。**")
     L.append("")
+    sh = v.get("股本来源") or {}
+    L.append(f"**这条带用的总股本:{v['总股本'] / 1e8:,.4f} 亿股**"
+             f"(来源:{sh.get('来源', '?')},截至 {v.get('股本截止日', '?')})。")
+    if sh.get("有股本变动"):
+        L.append("")
+        L.append(f"> ⚠ **季报之后有过股本变动。** 最近一次定期报告(截至 "
+                 f"{sh.get('季报截止')})披露的是 {sh['季报股本'] / 1e8:,.4f} 亿股,"
+                 f"比现在少 {abs(sh['与季报差pct']):.2f}%(增发 / 可转债转股 / "
+                 f"股权激励行权都会造成这个差)。"
+                 f"**这里按最新股本算** —— 用季报那个数会让市值和 PE 系统性偏低 "
+                 f"{abs(sh['与季报差pct']):.1f}%,而这只票在横向比估值时就会显得"
+                 f"比实际便宜。股本从日线的 `peTTM` 反推:"
+                 f"`peTTM × 最近四季归母净利 ÷ 收盘价`,"
+                 f"因为 `peTTM` 是**每天**按当天股本重算的。")
+    L.append("")
+    L.append("> ⚠ **这条带有一个已知的近似**:历史市值用「前复权价 × **今天**的股本」算,"
+             "所以它没有还原历次现金分红,也没有还原期间的增发与转股。"
+             "分红那一项对这几只的影响在 2% 以内;增发那一项会让早年的历史市值偏高"
+             "(拿今天更大的股本去乘早年的价),量级在 10% 上下,方向和分红相反。"
+             "两者都远小于带本身的宽度,但「纯事实」这个说法要打这个折扣。")
+    L.append("")
     b = v["前瞻PE带"]
     if not b.get("ok"):
         L.append(f"> 这只票的 3+1 PE 带算不出来:{b['why']}")
@@ -441,104 +490,17 @@ def sec_valuation(v, f, L, sector=None, rules=None):
     L.append("")
 
 
-def sec_market(mkt, L, gap=None):
-    L.append("## 9 市场怎么想(仅作对照,**没有进入上面任何一步**)")
-    L.append("")
-    L.append("上面每一节的结论都不依赖这一节。放在这里是为了回答一个问题:"
-             "**我们和市场差在哪,谁的依据更硬。**")
-    L.append("")
-    c = mkt.get("一致预期")
-    if c:
-        L.append("### 9.1 卖方一致预期(别人的预测)")
-        L.append("")
-        L.append("| 年度 | 预测机构数 | 最小 | 均值 | 最大 |")
-        L.append("|---|---:|---:|---:|---:|")
-        for r in c:
-            L.append(f"| {r.get('年度')} | {r.get('预测机构数')} | {r.get('最小值')} "
-                     f"| {r.get('均值')} | {r.get('最大值')} |")
-        L.append("")
-        L.append(f"来源:{mkt['来源'].get('一致预期', '')}。单位随源,通常是亿元归母净利。")
-        L.append("")
-        if gap:
-            L.append("**我们和市场差在哪** —— 先把两边算的时间段调成一样:")
-            L.append("")
-            for line in gap:
-                L.append(f"- {line}")
-            L.append("")
-    r = mkt.get("评级") or []
-    if r:
-        L.append("### 9.2 近期评级(别人的判断)")
-        L.append("")
-        L.append("| 发布日 | 机构 | 评级 | 变化 | 目标价下限 | 上限 |")
-        L.append("|---|---|---|---|---:|---:|")
-        for x in r[:12]:
-            L.append(f"| {x.get('发布日期')} | {x.get('研究机构简称')} | {x.get('投资评级')} "
-                     f"| {x.get('评级变化')} | {x.get('目标价格-下限') or '—'} "
-                     f"| {x.get('目标价格-上限') or '—'} |")
-        L.append("")
-        L.append(f"共 {len(r)} 条,列出最近 {min(12, len(r))} 条。"
-                 f"来源:{mkt['来源'].get('评级', '')}")
-        L.append("")
-    L.append("> **为什么这一节放最后而不是放开头**:先看到一致预期再去算,"
-             "很难不往那个数靠。判断要先自己做完,再拿别人的当对照。"
-             "两边差得远的时候,该问的是「谁的依据能被检验」,不是「谁的名气大」。")
-    L.append("")
-
-
-def consensus_gap(v, d, mkt) -> list[str]:
-    """把我们的预测和一致预期放到**同一段时间**上再比。
-
-    直接并排是错的:一致预期给的是**日历年全年**,我们预测的是**滚动四季**,
-    两个时间段不一样。调法是拿今年已披露的季度当共同基数,
-    反解出「市场隐含的剩余季度」,再和我们预测的那一季比 ——
-    这样比的才是同一段时间。
-    """
-    c = mkt.get("一致预期") or []
-    our = v.get("我们预测的未来四季净利")
-    f = v.get("预测") or {}
-    tgt = f.get("预测期")                      # 如 2026Q3
-    if not (c and our and tgt):
-        return []
-    yr = tgt[:4]
-    row = next((r for r in c if str(r.get("年度")) == yr), None)
-    if not row or not row.get("均值"):
-        return []
-    done = [r for r in d["quarters"]
-            if r["period"][:4] == yr and r["period"] < tgt
-            and r.get("单季归母净利") is not None]
-    if not done:
-        return []
-    got = sum(r["单季归母净利"] for r in done)
-    mean = float(row["均值"]) * 1e8            # 一致预期单位是亿元
-    rest = mean - got                          # 市场隐含的「今年剩下的季度」合计
-    n_rest = 4 - len(done)
-    p = f.get("归母净利区间") or {}
-    lines = [
-        f"一致预期 {yr} 全年归母净利均值 **{row['均值']} 亿**"
-        f"({row.get('预测机构数')} 家),{yr} 已披露 "
-        f"{'、'.join(r['period'] for r in done)} 合计 **{yi(got)} 亿**,"
-        f"两者相减 = 市场隐含今年剩下 {n_rest} 个季度合计 **{yi(rest)} 亿**,"
-        f"平均每季 **{yi(rest / n_rest)} 亿**。",
-    ]
-    if p.get("mid"):
-        lines.append(
-            f"我们对 {tgt} 单季的预测是 **{yi(p['low'])} ~ {yi(p['high'])} 亿**"
-            f"(中枢 {yi(p['mid'])} 亿)。和上面那个「平均每季 {yi(rest / n_rest)} 亿」比,"
-            + ("**我们更低**" if p["mid"] < rest / n_rest else "**我们更高**")
-            + f",差 {abs(p['mid'] - rest / n_rest) / (rest / n_rest) * 100:.0f}%。")
-        lines.append(
-            "差在哪是可以查的:要么是**营收**(我们的方法在第 3 节写了依据和失效条件),"
-            "要么是**净利率**(我们用近四季实际区间,没有假设它改善)。"
-            f"{tgt} 季报出来时,这条差值会有一个明确的对错。")
-    return lines
-
-
-def sec_how(code, v, L):
+def sec_how(code, v, raw, L):
     L.append("## 12 数据来源:每条都能点开核对")
+    L.append("")
+    L.append("**下面只列这一轮盘上真有文件的源。** 按每条的「落在哪」路径 glob 过一遍,"
+             "查无文件的挪到表尾单列 —— 列一条打不开的来源比不列更糟,"
+             "它让人以为核对过了。")
     L.append("")
     L.append(catalog.markdown(
         ["行情", "公司报表", "公司自己说的", "筹码", "海外·事实", "行业量价",
-         "★ 别人的预测", "人工投喂"], code, heading=None).lstrip("\n"))
+         "★ 别人的预测", "人工投喂"], code, heading=None,
+        root=raw.parent.parent).lstrip("\n"))
     L.append("**这一版新增的三类数据**:")
     L.append("")
     L.append("| 用在哪 | 数据 | 落在哪 | 怎么重跑 |")
@@ -568,7 +530,7 @@ def build(code: str, name: str, raw: Path, target: str | None,
     v = valuation.build(code, raw, target)
     f = v["预测"]
     d = quarterly.build(raw, code, since="2023")
-    mkt = market_view(raw, code)
+    mkt = rm.market_view(raw, code)
 
     # 3+1 净利相对再往前四季的同比 —— 选倍数要用。
     # dict 的 key 沿用旧名「未来四季净利同比」,只改用户看得到的文字。
@@ -608,7 +570,11 @@ def build(code: str, name: str, raw: Path, target: str | None,
     #   深科达(panel_osat)没有对应的海外同业组 → 传 None,第 8 节会说明原因。
     grp = forecast.UPSTREAM_OF.get(code)
     pos.sec_peers(raw, {"cloud": "AI算力链-同业", "oil_cn": "油气设服"}.get(grp), 8, L)
-    sec_market(mkt, L, consensus_gap(v, d, mkt))
+    rm.sec_market(mkt, L, rm.consensus_gap(v, d, mkt))
+    # 9.3 外部研报 —— **有就必须列,而且要正面回应方向差**。
+    _dd = adv.get("决策") or {}
+    rm.sec_extern(rm.extern_research(raw.parent.parent, code),
+               _dd.get("EV"), adv.get("动作", "—"), spot, L)
     # ⚠ `pick_multiple` 只剩第 5 节没用到的历史包袱,第 10 节的参考价位改成
     #   直接用第 11.1 节那三个情景价 —— 一份报告里不能有两套「最谨慎价」。
     pos.sec_action(v, f, d, cost, spot, None, 10, L, dec=adv.get("决策"))
@@ -621,7 +587,7 @@ def build(code: str, name: str, raw: Path, target: str | None,
                             min(gm4) if gm4 else None)
     journal_log.render(rec, "10.1", L)
     advice.render(adv, v, f, position, 11, L)
-    sec_how(code, v, L)
+    sec_how(code, v, raw, L)
     return "\n".join(L) + "\n"
 
 

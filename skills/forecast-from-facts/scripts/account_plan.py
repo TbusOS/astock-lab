@@ -118,6 +118,69 @@ def ev_of(view):
     return (view["建议"].get("决策") or {}).get("EV")
 
 
+# 卖出的三笔费用。**都是估算,以券商实际扣的为准。**
+# 为什么要给:报告里写「卖 402,820 元」,到账一定比这个数少,而八份文档
+# 一个字都没提过佣金印花税 —— 读者只能自己再算一遍,或者干脆不知道差多少。
+FEE_COMMISSION = 0.00025      # 佣金 万 2.5(双向;这里只算卖出这一笔)
+FEE_STAMP = 0.001             # 印花税 千 1(**只在卖出时收**)
+FEE_TRANSFER = 0.00001        # 过户费 万 0.1(沪深两市现在都收)
+LOT = 100                     # A 股一手 = 100 股
+
+
+def shares_for(pos: dict, amount: float) -> tuple[int, float]:
+    """要卖 `amount` 元,实际该报多少股 → (股数, 按现价算的实际卖出金额)。
+
+    **向上取整到整手**,理由:少卖一手就还在上限之上,而上限那条是硬约束;
+    多卖一手只是多变现几百块。两个方向的代价不对称,所以往「够到」那边取。
+    最后一手不足 100 股时(比如全卖 2,580 股)按实际持股数报,不再取整 ——
+    零股可以整笔卖出,不能拆着卖。
+    """
+    px, held = pos.get("price"), pos.get("shares")
+    if not px or not held or amount <= 0:
+        return 0, 0.0
+    need = int(-(-amount // px))                      # 向上取整到股
+    if need >= held:
+        return int(held), held * px
+    lots = int(-(-need // LOT))                       # 再向上取整到手
+    sh = min(int(held), lots * LOT)
+    return sh, sh * px
+
+
+def _fees(rows, L) -> None:
+    """卖出费用估算。**标明是估算**,并且逐步给,不只给合计 ——
+    只给合计的话读者没法判断哪一步值不值得拆成两次做。"""
+    if not rows:
+        return
+    rate = FEE_COMMISSION + FEE_STAMP + FEE_TRANSFER
+    L.append(f"**卖出费用(估算,以券商实际为准)** —— 佣金按万 2.5、"
+             f"印花税卖出千 1、过户费万 0.1,合计约 **{rate * 1000:.2f}‰**:")
+    L.append("")
+    L.append("| 这一步卖 | 金额 | 佣金 | 印花税 | 过户费 | 合计 |")
+    L.append("|---|---:|---:|---:|---:|---:|")
+    tot = 0.0
+    for name, amt in rows:
+        fee = amt * rate
+        tot += fee
+        L.append(f"| {name} | {money(amt)} | {money(amt * FEE_COMMISSION, 0)} "
+                 f"| {money(amt * FEE_STAMP, 0)} | {money(amt * FEE_TRANSFER, 2)} "
+                 f"| **{money(fee, 0)}** |")
+    total_amt = sum(a for _, a in rows)
+    L.append(f"| **合计** | {money(total_amt)} | | | | **{money(tot, 0)}** |")
+    L.append("")
+    L.append(f"> 上表的金额是**取整到手之后的实际卖出金额**,所以它比"
+             f"「要卖多少」那一列的加总略多 —— 差的就是向上取整那部分"
+             f"(少卖一手就还在上限之上,多卖一手只是多变现几百块,"
+             f"两个方向的代价不对称)。")
+    L.append("")
+    L.append(f"> 这几步一共卖 {money(total_amt)},费用大约 **{money(tot, 0)} 元**"
+             f"(占卖出金额 {tot / total_amt * 100:.3f}%)。"
+             f"**量级上不改变任何结论**,但到账金额会比上表少这么多 —— "
+             f"写出来是为了让你下单时心里有数,不用自己再算一遍。"
+             f"佣金各家不同(有最低 5 元一笔的),印花税是法定的,"
+             f"**实际以你的交割单为准**。")
+    L.append("")
+
+
 def sell_order(j, views):
     """排出执行顺序,返回 (该减的, 该留的) 两串。三条规则见文件头。
 
@@ -150,21 +213,31 @@ def caps_table(j, views, L) -> dict:
     各自不超限,合起来在 bear 情景下能让净资产掉三成 ——
     「分散到三只」并没有分散风险,只是把同一个赌注写成了三行。
     """
-    a = j["account"]
-    equity = a.get("净资产")
+    import sections_position as sp
+    equity = sp.net_equity(j)
     acct = {"净资产": equity,
             "单票最大可承受亏损_pct": j.get("_单票最大可承受亏损_pct_of_净资产"),
-            "行业最大可承受亏损_pct": j.get("_行业最大可承受亏损_pct_of_净资产")}
+            "行业最大可承受亏损_pct": j.get("_行业最大可承受亏损_pct_of_净资产"),
+            "单票硬上限_pct": j.get("_单票硬上限_pct_of_净资产"),
+            "行业硬上限_pct": j.get("_单行业硬上限_pct_of_净资产")}
     rows = []
     for p in j["positions"]:
         v = views.get(p["code"])
         d = (v or {}).get("建议", {}).get("决策") or {}
         sc = d.get("三情景") or {}
         bear = (sc.get("情景") or {}).get("bear", {}).get("涨跌") if sc.get("ok") else None
+        cap = d.get("仓位上限") or {}
+        if not cap.get("ok") and not cap.get("why"):
+            # 整个决策提前退出(行业弱匹配 / 没定尺 / 三情景算不出来)时根本没有
+            # 「仓位上限」这个键。**原因要从决策那一层原样带过来** ——
+            # 印一句「缺数据」等于把「我们不敢用这把尺」说成「数据没抓到」,
+            # 两件事该做的完全不同。
+            cap = {"ok": False, "why": d.get("why") or "这只票没给出决策,"
+                                                       "见它自己那份报告第 11 节"}
         rows.append({"code": p["code"], "name": p["name"], "市值": p["market_value"],
                      "行业": (v or {}).get("建议", {}).get("行业"),
                      "bear跌幅": bear,
-                     "上限": d.get("仓位上限") or {}, "超限": d.get("超限"),
+                     "上限": cap, "超限": d.get("超限"),
                      "EV": d.get("EV")})
     L.append("## 5.5 仓位上限:每只最多能占多少")
     L.append("")
@@ -177,32 +250,45 @@ def caps_table(j, views, L) -> dict:
              f"一只 bear 跌 70% 的票让你亏 14%,风险差一倍多。")
     L.append("")
     L.append("```")
-    L.append(f"单票上限% = 可承受亏损 {acct['单票最大可承受亏损_pct']}% of 净资产"
-             f" ÷ |bear 情景跌幅| × 确信度系数(高 1.0 / 中 0.75 / 低 0.5)")
+    L.append(f"模型上限% = 可承受亏损 {acct['单票最大可承受亏损_pct']}% of 净资产"
+             f" ÷ |bear 情景跌幅| × 确信度系数(0.5 + 0.5 × 得分÷本行业可得分)")
+    L.append(f"硬线上限% = {acct['单票硬上限_pct']}% of 净资产"
+             f"(**和估值模型无关的集中度线**)")
+    L.append("单票上限%  = 两条取小的那条")
     L.append("```")
     L.append("")
-    L.append(f"「可承受亏损 {acct['单票最大可承受亏损_pct']}%」是 `account.json` 里的"
-             f"显式参数 `_单票最大可承受亏损_pct_of_净资产`,"
+    L.append(f"「可承受亏损 {acct['单票最大可承受亏损_pct']}%」和「硬线 "
+             f"{acct['单票硬上限_pct']}%」都是 `account.json` 里的显式参数,"
              f"**你可以改,但改了要在同一个文件里写清楚为什么改** —— "
-             f"它直接决定下面每一行的结论。")
+             f"它们直接决定下面每一行的结论。")
     L.append("")
-    L.append("| 股票 | 行业 | bear 跌幅 | 确信度 | 上限(占净资产) | 上限金额 "
-             "| 现在占 | 超出 |")
-    L.append("|---|---|---:|---|---:|---:|---:|---:|")
+    L.append("**为什么要有第二条硬线**:第一条从 bear 情景倒推,所以它会**跟着估值模型漂** —— "
+             "哪天 PE 带变宽、bear 跌幅算成 −20%,上限就跳到 37.5%,"
+             "而那时候你的杠杆和集中度一点没变。**风控结论不该随估值模型漂。**"
+             "硬线丑但稳:模型出错的时候它仍然成立。")
+    L.append("")
+    L.append("| 股票 | 行业 | bear 跌幅 | 确信度 | 模型上限 | 硬线上限 "
+             "| **实际上限** | 哪条起作用 | 上限金额 | 现在占 | 超出 |")
+    L.append("|---|---|---:|---|---:|---:|---:|---|---:|---:|---:|")
     for r in rows:
         c = r["上限"]
         now = r["市值"] / equity * 100
         if c.get("ok"):
             over = max(0.0, r["市值"] - c["上限金额"])
             L.append(f"| {r['name']}({r['code']}) | {r['行业'] or '—'} "
-                     f"| {r['bear跌幅']:+.1f}% | {c['档']}({c['系数']}) "
-                     f"| {c['上限pct']:.1f}% | {money(c['上限金额'])} "
-                     f"| **{now:.1f}%** | "
+                     f"| {r['bear跌幅']:+.1f}% "
+                     f"| {c['档']} {c['分']}/{c['满分']}({c['系数']}) "
+                     f"| {c['模型上限pct']:.1f}% "
+                     + (f"| {c['硬上限pct']:.0f}% " if c.get("硬上限pct") is not None
+                        else "| 没设 ")
+                     + f"| **{c['上限pct']:.1f}%** | {c['起作用的']} "
+                     f"| {money(c['上限金额'])} | **{now:.1f}%** | "
                      + (f"**{money(over)}**" if over > 0 else "—") + " |")
         else:
             L.append(f"| {r['name']}({r['code']}) | {r['行业'] or '—'} | — | — "
-                     f"| 算不出 | — | {now:.1f}% | — |")
-            L.append(f"| ↳ 为什么算不出 | | | | {c.get('why', '缺数据')} | | | |")
+                     f"| 算不出 | — | 算不出 | — | — | {now:.1f}% | — |")
+            L.append(f"| ↳ 为什么算不出 | | | | {c.get('why', '缺数据')} "
+                     f"| | | | | | |")
     L.append("")
     sec = decision.sector_cap(
         [{"行业": r["行业"], "市值": r["市值"], "bear跌幅": r["bear跌幅"]} for r in rows],
@@ -213,23 +299,27 @@ def caps_table(j, views, L) -> dict:
         L.append(f"同行业的票会一起跌。三只光模块分开看各自不超限,"
                  f"合起来在 bear 情景下能让净资产掉三成 —— "
                  f"**「分散到三只」并没有分散风险,只是把同一个赌注写成了三行。**"
-                 f"所以还要卡一条:同行业合计不超过净资产的 "
-                 f"{sec['可承受亏损pct']}% ÷ |该行业市值加权 bear 跌幅|。")
+                 f"所以还要卡一条:同行业合计不超过"
+                 f"「净资产的 {sec['可承受亏损pct']}% ÷ |该行业市值加权 bear 跌幅|」"
+                 f"和「净资产的 {acct['行业硬上限_pct']}%(硬线)」两者的小值。")
         L.append("")
-        L.append("| 行业 | 几只 | 合计市值 | 加权 bear 跌幅 | 合计上限 | 上限金额 "
-                 "| 现在占 | 超出 |")
-        L.append("|---|---:|---:|---:|---:|---:|---:|---:|")
+        L.append("| 行业 | 几只 | 合计市值 | 加权 bear 跌幅 | 模型上限 | 硬线上限 "
+                 "| **实际上限** | 哪条起作用 | 上限金额 | 现在占 | 超出 |")
+        L.append("|---|---:|---:|---:|---:|---:|---:|---|---:|---:|---:|")
         for name, x in sorted(sec["按行业"].items(),
                               key=lambda kv: -(kv[1].get("市值") or 0)):
             if x.get("ok"):
                 L.append(f"| **{name}** | {x['只数']} | {money(x['市值'])} "
-                         f"| {x['加权bear跌幅']:+.1f}% | {x['上限pct']:.1f}% "
+                         f"| {x['加权bear跌幅']:+.1f}% | {x['模型上限pct']:.1f}% "
+                         + (f"| {x['硬上限pct']:.0f}% " if x.get("硬上限pct") is not None
+                            else "| 没设 ")
+                         + f"| **{x['上限pct']:.1f}%** | {x['起作用的']} "
                          f"| {money(x['上限金额'])} | **{x['现仓位pct']:.1f}%** | "
                          + (f"**{money(x['超出金额'])}**" if x["超出金额"] > 0 else "—")
                          + " |")
             else:
-                L.append(f"| {name} | — | {money(x.get('市值'))} | — | 算不出 "
-                         f"| — | — | {x.get('why', '')} |")
+                L.append(f"| {name} | — | {money(x.get('市值'))} | — | 算不出 | — "
+                         f"| 算不出 | — | — | — | {x.get('why', '')} |")
         L.append("")
     # ⚠ 「可承受亏损 10%」是审核方定的**初值**,不是算出来的。
     #   只印一个 10% 的结论,读者没法判断这个参数有多要紧 ——
@@ -253,7 +343,11 @@ def caps_table(j, views, L) -> dict:
             continue
         caps, overs = [], []
         for tol in (10, 15, 20):
-            capp = c["上限pct"] / base_tol * tol          # 上限和可承受亏损成正比
+            # ⚠ 只有**模型上限**和可承受亏损成正比;硬线不随它动(那正是硬线的意义)。
+            #   拿最终上限直接按比例放会把硬线也放大,读者会以为调参数能救回来。
+            capp = c["模型上限pct"] / base_tol * tol
+            if c.get("硬上限pct") is not None:
+                capp = min(capp, float(c["硬上限pct"]))
             caps.append(f"{capp:.1f}%")
             over = max(0.0, r["市值"] - equity * capp / 100)
             overs.append(f"**{money(over)}**" if over > 0 else "—")
@@ -267,7 +361,9 @@ def caps_table(j, views, L) -> dict:
                 continue
             caps, overs = [], []
             for tol in (10, 15, 20):
-                capp = x["上限pct"] / base_stol * (tol * 2)   # 行业档默认是单票的两倍
+                capp = x["模型上限pct"] / base_stol * (tol * 2)  # 行业档默认是单票的两倍
+                if x.get("硬上限pct") is not None:
+                    capp = min(capp, float(x["硬上限pct"]))
                 caps.append(f"{capp:.1f}%")
                 over = max(0.0, x["市值"] - equity * capp / 100)
                 overs.append(f"**{money(over)}**" if over > 0 else "—")
@@ -277,7 +373,8 @@ def caps_table(j, views, L) -> dict:
     L.append("> 读法:**看哪一行在三档之间换了符号**。三档都超的,结论跟这个参数无关,"
              "调参数救不回来;只在 10% 那档超的,结论**是被这个参数定的** —— "
              "那就得先想清楚自己到底能承受多少,再看它该不该减。"
-             "(行业那几行按「单票档 × 2」同比例放,和 5.5.1 用的是同一个比例关系。)")
+             "(行业那几行按「单票档 × 2」同比例放,和 5.5.1 用的是同一个比例关系。"
+             "**只有模型那条随参数放,硬线不动** —— 那正是硬线存在的意义。)")
     L.append("")
     L.append("> ⚠ **上限的分母是净资产,不是总市值。** 总市值里有借来的钱:"
              f"这个账户总市值 {money(sum(p['market_value'] for p in j['positions']))}、"
@@ -333,11 +430,17 @@ def sec_options(j, views, L):
                 "新总资产": a["总资产"] - repay,
                 "新现金": cash + got - repay}
 
-    L.append("## 6 可以怎么做,以及每种做法的**后果**")
+    L.append("## 6 如果把这几只**整只卖掉**会怎样(后果演示)")
     L.append("")
-    L.append("**下面不是建议,是算出来的后果。** 每个数字你都可以自己验算:"
-             "卖出换成现金还债,总资产和总负债同额减少,**你的净资产一分不变**"
-             f"(始终是 {money(equity)} 元)。变的只有杠杆和离强平的距离。")
+    L.append("**下面不是建议,是算出来的后果。** 每一档都假设把那几只**全部卖光**,"
+             "为的是看清「杠杆降到什么程度要付出多大代价」这条曲线。"
+             "**实际该卖多少在第 7 节**,那里按规则算的是「减到仓位上限 / 还清负债」"
+             "两条约束里大的那个,**通常不用全卖** —— 两节回答的不是同一个问题,"
+             "数不一样是正常的,别把这里的 D 档当成执行量。")
+    L.append("")
+    L.append("每个数字你都可以自己验算:卖出换成现金还债,总资产和总负债同额减少,"
+             f"**你的净资产一分不变**(始终是 {money(equity)} 元 = 总资产 − 总负债)。"
+             f"变的只有杠杆和离强平的距离。")
     L.append("")
 
     # ⚠ 这几个方案以前把股票代码写死(`["688328", "002353", "300476"]`)。
@@ -395,17 +498,92 @@ def sec_options(j, views, L):
              "这不在数据里 —— 它取决于这笔钱是什么钱、多久要用、以及你晚上睡不睡得着。"
              "数据能告诉你的只有上面那张表:每种做法之后,账户长什么样。")
     L.append("")
+    L.append("⚠ **再说一遍这一节和第 7 节的关系。** 这一节每一档都是「整只卖光」;"
+             "第 7 节按规则算的是「减到仓位上限」和「还清剩余负债」两条约束里大的那个,"
+             "所以**同一只票在两节里的卖出金额会不一样**。"
+             "要执行,按第 7 节;这一节只用来看「代价曲线长什么样」。")
+    L.append("")
+
+
+def plan_amounts(j, views, debt: float):
+    """算出每只该卖多少 —— **两条约束分两遍走,不再取 max。**
+
+    ## 2026-09-03 改:旧写法「卖出量 = max(减到上限, 还清剩余负债)」是错的
+
+    它把两条本来分开的约束塞进同一个 max,而「还清剩余负债」这一项在**排在
+    第一位的那只票**身上永远等于「剩余负债全额」—— 那个数通常比它自己的市值还大,
+    于是排第一的票被全卖。实测:新易盛 EV −0.3%(中性带里),因为排第一,
+    `max(超限 334,142, 剩余负债 614,575)` 把它整只清掉;
+    而 EV −11.4% 的杰瑞排第三,只按判断减。**一只中性的票被清仓,
+    一只判断该减的票反而减得少** —— 顺序决定了卖多少,这不是任何一条规则的本意。
+
+    现在分三块算,每块回答一个不同的问题:
+
+    | 块 | 问什么 | 量 |
+    |---|---|---|
+    | ① 减到上限 | 最坏那一档兑现时,亏掉的净资产超没超可承受线 | 超出上限的部分 |
+    | ② 按判断 | 这只票自己的 EV 落在哪一档 | 清仓 = 全卖;减仓 = 减 `TRIM_FRACTION` |
+    | ③ 追加还债 | ①② 卖完之后债还清了没有 | 没清才触发,按 EV 从差到好追加 |
+
+    ①② 对同一只票**取大的那个**(它们说的是同一只票该减多少,不冲突);
+    ③ 是账户层面的,只在前两块的钱不够还债时才动,**而且从 EV 最差的那只开始** ——
+    追加卖的理由是「降杠杆」,那就该从最不值得留的那只身上出。
+
+    返回 {code: {"量": 元, "为什么": 文字}}。
+    """
+    import decision
+    by = {p["code"]: p for p in j["positions"]}
+    plan = {}
+    for code, p in by.items():
+        v = views.get(code)
+        if not v:
+            continue
+        act = v["建议"]["动作"]
+        cap_amt = over_amount(v, p["market_value"])
+        judge_amt, judge_why = 0.0, ""
+        if act.startswith("清仓"):
+            judge_amt, judge_why = p["market_value"], "按判断:清仓 = 全卖"
+        elif act.startswith("减仓"):
+            judge_amt = p["market_value"] * decision.TRIM_FRACTION
+            judge_why = f"按判断:减仓 = 减 {decision.TRIM_FRACTION:.0%}"
+        if cap_amt <= 0 and judge_amt <= 0:
+            continue
+        if cap_amt >= judge_amt:
+            plan[code] = {"量": cap_amt, "为什么": "减到仓位上限"}
+        else:
+            plan[code] = {"量": judge_amt, "为什么": judge_why}
+    # ③ 追加还债 —— 只在前两块不够时触发,按 EV 从差到好
+    got = sum(x["量"] for x in plan.values())
+    short = debt - got
+    if short > 0:
+        cand = [c for c in by
+                if views.get(c) and is_sell(views[c])]
+        cand.sort(key=lambda c: (ev_of(views[c]) if ev_of(views[c]) is not None
+                                 else 0.0))
+        for c in cand:
+            if short <= 0:
+                break
+            room = by[c]["market_value"] - plan.get(c, {}).get("量", 0.0)
+            if room <= 0:
+                continue
+            add = min(room, short)
+            short -= add
+            cur = plan.setdefault(c, {"量": 0.0, "为什么": ""})
+            cur["量"] += add
+            cur["为什么"] = ((cur["为什么"] + " + " if cur["为什么"] else "")
+                             + "追加卖到还清负债")
+    return plan
 
 
 def sec_plan(j, views, L):
-    """执行顺序 —— 减仓和降杠杆是同一件事,先卖哪只有讲究。
+    """第 7 节:按规则实际该卖多少。量的算法见 `plan_amounts`。
 
-    排序依据两条,**都不是「哪只亏得多」**:
-      ① 建议是减仓/清仓的先动 —— 卖出的理由必须是判断,不是账面盈亏
-      ② 同为减仓时,**没有融资负债的先卖**。卖有负债的那只,
-         拿回的钱要先还它自己的债,能腾出的现金反而少;
-         卖没负债的,全额都能拿去还债,降杠杆效率更高
+    排序依据三条,**都不是「哪只亏得多」**:
+      ① 先动超过仓位上限的(这一条不看期望值)
+      ② 再按期望值从差到好
+      ③ 同为减仓时,没有融资负债的先卖(卖有负债的那只,拿回的钱要先还它自己的债)
     """
+    import decision
     a, ps, md = j["account"], j["positions"], j["margin_debt"]
     mv = sum(p["market_value"] for p in ps)
     debt_of = {d["code"]: d["当前负债总额"] for d in md}
@@ -416,29 +594,47 @@ def sec_plan(j, views, L):
 
     to_sell, kept = sell_order(j, views)
     ordered = to_sell + kept
+    plan = plan_amounts(j, views, debt)
 
-    L.append("## 7 执行顺序:先动哪只")
+    L.append("## 7 按规则实际该卖多少(执行量)")
     L.append("")
-    L.append("**减仓和降杠杆是同一件事。** 排序依据三条,**没有一条是「哪只亏得多」**:")
+    L.append("**这一节和第 6 节回答的不是同一个问题。** 第 6 节每一档都假设「整只卖光」,"
+             "是为了看清代价曲线;这一节按规则算每只**实际**该卖多少 —— "
+             "所以同一只票在两节里的数会不一样,**要执行看这一节**。")
     L.append("")
-    L.append("1. **先动超过仓位上限的**(见第 5.5 节)—— 上限是从 bear 情景倒推的:"
-             "超限意味着最坏那一档兑现时,亏掉的净资产超过你自己设的可承受线。"
-             "**这一条不看期望值** —— 期望为正也不代表你扛得住最坏那一档")
-    L.append("2. **再按期望值从差到好** —— 期望值最差的先卖。"
-             "卖出的理由必须是判断变了,不是账面亏了多少:"
-             "「等回本再走」把卖出条件从「判断变了」换成了「价格回到某个数」,"
-             "而价格不知道你的成本是多少")
-    L.append("3. **同为减仓时,没有融资负债的先卖** —— 卖有负债的那只,"
-             "拿回的钱要先还它自己的债,能腾出的现金反而少;卖没负债的,"
-             "全额都能拿去还债,降杠杆效率更高")
+    L.append("**卖多少,分三块算,每块回答一个不同的问题**"
+             "(2026-09-03 改;旧写法把它们塞进一个 `max`,"
+             "结果**排在第一位的那只票会被剩余负债全额吃掉** —— "
+             "一只期望值在中性带里的票因为排序靠前被整只清掉,"
+             "而期望值最差的那只反而减得少。顺序不该决定卖多少):")
     L.append("")
-    L.append("| 顺序 | 股票 | 建议 | 期望值 | 超限 | 市值 | 这只的融资负债 "
-             "| 浮盈亏 | 要卖多少 | 卖完之后 |")
-    L.append("|---|---|---|---:|:-:|---:|---:|---:|---:|---|")
+    L.append("| 块 | 问什么 | 卖多少 |")
+    L.append("|---|---|---|")
+    L.append("| ① **减到仓位上限** | 最坏那一档兑现时,亏掉的净资产超没超你设的可承受线 "
+             "| 超出上限的那部分 |")
+    L.append(f"| ② **按它自己的判断** | 这只票的期望值落在哪一档 "
+             f"| 清仓 = 全卖;减仓 = 减 **{decision.TRIM_FRACTION:.0%}**"
+             f"(和个股报告 11.8 节同一个数) |")
+    L.append("| ③ **追加还债** | ①② 卖完之后,债还清了没有 "
+             "| **没清才触发**,按期望值从差到好追加 |")
+    L.append("")
+    L.append("①② 对同一只票取大的那个 —— 它们说的是同一只票该减多少,不冲突;"
+             "③ 是**账户层面**的,只在前两块的钱不够还债时才动,"
+             "而且从期望值最差的那只开始:追加卖的理由是降杠杆,"
+             "那就该从最不值得留的那只身上出。")
+    L.append("")
+    L.append("**先动哪只**,三条,**没有一条是「哪只亏得多」**:"
+             "① 先动超过仓位上限的(不看期望值)· ② 再按期望值从差到好 · "
+             "③ 同为减仓时没有融资负债的先卖(卖有负债的那只,"
+             "拿回的钱要先还它自己的债,能腾出的现金反而少)。")
+    L.append("")
+    L.append("| 顺序 | 股票 | 建议 | 期望值 | 超限 | 市值 | 这只的融资负债 | 浮盈亏 "
+             "| 按规则要卖 | 为什么是这个量 | **实际报单(整手)** | 卖完之后 |")
+    L.append("|---|---|---|---:|:-:|---:|---:|---:|---:|---|---|---|")
     run_debt, run_mv, run_cash = debt, mv, cash
     steps = 0
-    partial, keep_first = None, None          # 记「第几步不用全卖」「第一只不该动的是谁」
-    for i, p in enumerate(ordered, 1):
+    sold_rows, partial, keep_first = [], None, None
+    for p in ordered:
         v = views.get(p["code"])
         if v:
             act = v["建议"]["动作"]
@@ -448,75 +644,58 @@ def sec_plan(j, views, L):
         else:
             act, sc, ol = "算不出", "—", "—"
         d = debt_of.get(p["code"])
-        need, after = "—", "**不动**"
-        if act.startswith(("减仓", "清仓")):
+        item = plan.get(p["code"])
+        need, why_amt, lots, after = "—", "—", "—", "**不动**"
+        if item and item["量"] > 0:
             steps += 1
-            if run_debt <= 0:
-                # 债已经还完了,这一步不再是降杠杆 —— 但**超限那条还在**。
-                # ⚠ 2026-09-02 第一版这里写「按判断减」就不给数了,而新易盛
-                #   占净资产 53.9%、上限 12.5%,明明超了 41 个百分点。
-                #   「不再为降杠杆」不等于「不用减」,两条约束管的不是同一件事。
-                by_cap = over_amount(v, p["market_value"])
-                if by_cap > 0:
-                    sell = min(p["market_value"], by_cap)
-                    need = f"{money(sell)}(减到仓位上限)"
-                    after = "债已清,这一步是把仓位降到上限以内"
-                else:
-                    sell = p["market_value"]
-                    need = "按判断减,不再为降杠杆"
-                    after = "负债已清,这一步只是执行判断"
-                run_mv -= sell
-                run_cash += sell
-            else:
-                # 两个约束取大的:① 减到仓位上限要卖多少 ② 还清剩余负债要卖多少。
-                # **超限的票不因为「债还清了」就停** —— 那两条管的不是同一件事:
-                # 债管的是「会不会被强平」,上限管的是「最坏那一档你亏不亏得起」。
-                by_cap = over_amount(v, p["market_value"])
-                by_debt = min(p["market_value"], run_debt)
-                sell = min(p["market_value"], max(by_cap, by_debt))
-                repay = min(sell, run_debt)         # 卖来的钱先还债
-                run_mv -= sell
+            why_amt = item["为什么"]
+            need = money(item["量"])
+            # ⚠ **后面每一个数都用取整后的实际金额算。** 金额一列、股数一列
+            #   各说各的,读者不知道担保比例是按哪个算的 —— 2026-09-02 那一版
+            #   写着「卖 397,875」又写着「500 股≈429,650」,两个数差 3 万。
+            sh, amt = shares_for(p, item["量"])
+            if sh:
+                full = "全卖" if sh >= p["shares"] else f"剩 {p['shares'] - sh:,} 股"
+                lots = f"**{sh:,} 股**({sh // 100} 手)= {money(amt)},{full}"
+                sold_rows.append((p["name"], amt))
+                repay = min(amt, run_debt)
+                run_mv -= amt
                 run_debt -= repay
-                run_cash += sell - repay            # 还完债多出来的变现金
-                why_amt = ("减到仓位上限" if by_cap > by_debt else
-                           "还清剩余负债" if by_debt > by_cap else "两条约束一样")
-                if sell < p["market_value"] * 0.99:
-                    need = f"{money(sell)}(**不用全卖**,{why_amt})"
-                    if partial is None:
-                        partial = (steps, p["name"], why_amt)
-                else:
-                    need = money(sell) + "(全卖)"
+                run_cash += amt - repay
                 if run_debt <= 0:
                     after = "**负债还清,杠杆消除**"
-                    if sell - repay > 1:
-                        after += f",另有 {money(sell - repay)} 现金"
+                    if run_cash - cash > 1:
+                        after += f",累计现金 {money(run_cash - cash)}"
                 else:
                     after = f"担保比例 {ratio_at(run_mv + run_cash, run_debt):.0f}%"
                     dd = drop_to_line(run_mv, run_cash, run_debt, lines["平仓线_pct"])
                     if dd:
                         after += f",离平仓线 {abs(dd):.0f}%"
-        if not act.startswith(("减仓", "清仓")) and v:
-            # ⚠ 不能拿「排序里第一只不减的」当「最不该动的」—— 排序里排在前面
-            #   可能只是因为它没有融资负债。要按**期望值最高**取,
-            #   那才是「该不该留」的依据。
+                if sh < p["shares"] and partial is None:
+                    partial = (steps, p["name"], why_amt, sh, amt)
+        elif v:
             e = ev_of(v)
             if e is not None and (keep_first is None or e > keep_first[2]):
                 keep_first = (p["name"], act, e, p["code"] in debt_of,
                               p["market_value"])
-        L.append(f"| {steps if act.startswith(('减仓', '清仓')) else '—'} "
+        L.append(f"| {steps if (item and item['量'] > 0) else '—'} "
                  f"| {p['name']}({p['code']}) "
                  f"| **{act}** | {sc} | {ol} | {money(p['market_value'])} "
                  + (f"| {money(d, 0)} " if d else "| 无 ")
-                 + f"| {p['pnl_pct']:+.2f}% | {need} | {after} |")
+                 + f"| {p['pnl_pct']:+.2f}% | {need} | {why_amt} | {lots} | {after} |")
     L.append("")
-    # ⚠ 这段以前写死「负债降到 0、杠杆消除、剩下的全是自有资金」。
-    #   那是上一版建议下的结果 —— 那时新易盛和中际旭创都是减仓,一路卖下去债确实清得完。
-    #   现在这两只一个持有一个买入,顺序到第 3 步就停了,债根本没还完,
-    #   而那句话还在说「降到 0」。**收尾必须实算**,不能是一句听着漂亮的总结。
+    L.append("> 「按规则要卖」是三块算出来的目标金额;「实际报单」是**向上取整到整手**"
+             "之后的股数和它对应的金额。**卖完之后那一列、以及下面的合计,"
+             "全部按实际报单的金额算** —— 两列各说各的话,读者不知道担保比例"
+             "是按哪个数来的。向上取整的方向是刻意的:少卖一手就还在上限之上,"
+             "多卖一手只是多变现几百块,两个方向的代价不对称。")
+    L.append("")
+    _fees(sold_rows, L)
+    sold = mv - run_mv
     if run_debt <= 0:
         free_cash = run_cash - cash
         L.append(f"> 上表假设**每一步卖出的钱先拿去还债,还清之后留成现金**。"
-                 f"走完这 {steps} 步共卖出 {money(mv - run_mv)},"
+                 f"走完这 {steps} 步共卖出 {money(sold)},"
                  f"负债从 {money(debt)} 降到 0,"
                  f"**杠杆消除**(不是变成某个更小的倍数 —— 没有负债就没有杠杆)。"
                  f"剩下持仓 {money(run_mv)}"
@@ -528,11 +707,10 @@ def sec_plan(j, views, L):
             L.append("")
             L.append(f"> **那 {money(free_cash)} 现金不用急着买回去。** "
                      f"按第 11 节那套规则,加仓要同时满足三条:期望值 > +20%、"
-                     f"确信度 ≥ 2、而且不超仓位上限 —— **五只里现在没有一只满足**。"
+                     f"确信度比例 ≥ 2/3、而且不超仓位上限 —— **五只里现在没有一只满足**。"
                      f"现金留着不是浪费:它是下一次「有票同时满足这三条」时的子弹,"
                      f"而在信用账户里它还顺带把可用保证金从负数拉回来。")
     else:
-        sold = mv - run_mv
         new_lev = run_mv / equity if equity else None
         dd = drop_to_line(run_mv, run_cash, run_debt, lines["平仓线_pct"])
         keep_txt = "、".join(
@@ -544,24 +722,20 @@ def sec_plan(j, views, L):
                  + (f",离平仓线从 "
                     f"{abs(drop_to_line(mv, cash, debt, lines['平仓线_pct'])):.0f}% "
                     f"拉开到 **{abs(dd):.0f}%**" if dd else "")
-                 + f"。**你的净资产全程不变**({money(equity)} 元)—— "
-                 f"卖出换现金再还债只改变杠杆,不改变你的钱。")
+                 + f"。**你的净资产全程不变**({money(equity)} 元)。")
         L.append("")
         L.append(f"> **债没有清零,还差 {money(run_debt)}。** 这套顺序到这里停,"
                  f"是因为剩下的 {keep_txt} —— 它们不在减仓名单里。"
                  f"继续降杠杆就得卖掉它们,那等于**违背它们自己的建议**,"
                  f"是另一个决定,依据也不同:"
-                 f"卖它们的理由只能是「杠杆本身让你睡不着」,不是「这两家公司变差了」。"
-                 f"这两条理由都成立,但要分开想 —— 混在一起会让人以为数据支持卖,"
-                 f"其实数据说的是别的。")
+                 f"卖它们的理由只能是「杠杆本身让你睡不着」,不是「这几家公司变差了」。"
+                 f"这两条理由都成立,但要分开想。")
     L.append("")
-    # ⚠ 这两段以前写死了「第 4 步」「新易盛」「中际旭创」。建议一变它们就成了错话,
-    #   而且不报错。现在从上面那张表实际算出来的顺序里取。
     if partial:
         L.append(f"注意第 {partial[0]} 步:**不用把{partial[1]}全卖掉** —— "
-                 f"卖到「{partial[2]}」那个量就够了(两条约束取大的那条)。"
-                 f"再多卖的部分既不降杠杆也不降超限,只是把股票换成现金 —— "
-                 f"那是另一个决定,依据是它自己的减仓建议,不是这两条。")
+                 f"卖 {partial[3]:,} 股({money(partial[4])})就够了,依据是"
+                 f"「{partial[2]}」。再多卖的部分既不降杠杆也不降超限,"
+                 f"只是把股票换成现金 —— 那是另一个决定。")
         L.append("")
     L.append("**不用一次做完。** 上表是顺序不是时间表:可以先做第 1 步看两周,"
              "再决定要不要往下走。**但顺序别倒过来**"
@@ -578,5 +752,3 @@ def sec_plan(j, views, L):
                 "。表里每一只现在都是建议减的,所以按盈亏和负债结构排的这个顺序"
                 "就是降杠杆效率最高的那个。"))
     L.append("")
-
-

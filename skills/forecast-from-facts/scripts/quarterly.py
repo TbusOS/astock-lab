@@ -49,6 +49,41 @@ CF = ["经营活动产生的现金流量净额", *CAPEX_KEYS]
 QEND = {"0331": "Q1", "0630": "Q2", "0930": "Q3", "1231": "Q4"}
 PREV = {"0630": "0331", "0930": "0630", "1231": "0930"}
 
+Q_ORDER = ["Q1", "Q2", "Q3", "Q4"]
+
+
+def qidx(period: str) -> int:
+    """把 `2025Q3` 变成一个能做减法的序号,用来量两个季度之间隔多远。
+
+    为什么需要它:判「几个点连不连续」不能比年份 —— 2025Q4 和 2026Q1 年份不同
+    但只隔一个季度,2025Q1 和 2025Q4 年份相同却隔三个。年份和距离是两回事。
+
+    **住在这里而不是 forecast.py**:三处要用它 —— 产业链位置判四个点连不连续、
+    3+1 PE/PS 带取四季窗口、存货法取近四季比值。各写一份必然漂,
+    而漂了不报错:窗口悄悄跨了五个季度,数字照样算得出来。
+    """
+    return int(period[:4]) * 4 + Q_ORDER.index(period[4:])
+
+
+def gap_in(periods) -> str | None:
+    """这一串季度是不是首尾相连。连续返回 None,有洞返回一句「缺了哪几季」。
+
+    ⚠ **为什么必须查**:下游都是按**下标**取窗口(`xs[i-2:i+2]`、`ratios[-4:]`),
+    而下标是「第几个有数的季度」,不是「第几个季度」。中间缺一季,
+    四个下标就横跨五个季度 —— 分母多算了一整季,PE 因此偏低,
+    而报告不会有任何提示。2026-09-02 审核用模拟数据复现过三次。
+    """
+    if len(periods) < 2:
+        return None
+    idx = [qidx(p) for p in periods]
+    if idx[-1] - idx[0] + 1 == len(idx):
+        return None
+    have = set(idx)
+    miss = [i for i in range(idx[0], idx[-1] + 1) if i not in have]
+    names = [f"{i // 4}{Q_ORDER[i % 4]}" for i in miss]
+    return (f"{periods[0]}~{periods[-1]} 之间缺 {'、'.join(names)},"
+            f"这 {len(periods)} 个点实际横跨 {idx[-1] - idx[0] + 1} 个季度,窗口跨季")
+
 
 def num(v):
     """报表里空值有好几种写法(''、'--'、None、'nan'),统一成 None。"""

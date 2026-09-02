@@ -85,6 +85,11 @@ PROFIT_FIELDS = ["code", "pubDate", "statDate", "roeAvg", "npMargin", "gpMargin"
                  "netProfit", "epsTTM", "MBRevenue", "totalShare", "liqaShare"]
 QEND = {"Q1": "-03-31", "Q2": "-06-30", "Q3": "-09-30", "Q4": "-12-31"}
 
+# 一条带里能算出值的交易日**占比**低于这个数,就判这条尺在这只票上不成立。
+# 只查「够不够 60 天」是不够的:深科达 1332 天里只有 559 天算得出 3+1 PE(42%),
+# 门槛照样过,而那条带的 p10/p50/p90 是由几段不连续的时期撑起来的。
+COVERAGE_MIN_PCT = 50.0
+
 
 def newest(raw: Path, pat: str):
     fs = sorted(glob.glob(str(raw / pat)))
@@ -183,9 +188,16 @@ def forward_ps_band(raw: Path, code: str, share: float, since="2019") -> dict:
           if p.get("单季营收") is not None]
     if len(rv) < 8:
         return {"ok": False, "why": f"单季营收只有 {len(rv)} 期,算不出 3+1 PS 带(至少要 8 期)"}
-    fwd = {}
+    fwd, skipped = {}, []
     for i in range(2, len(rv) - 1):
-        fwd[rv[i][1]] = sum(x[2] for x in rv[i - 2:i + 2])
+        # ⚠ `rv[i-2:i+2]` 是**下标**窗口,不是季度窗口。序列缺一季时它会横跨
+        #   五个季度,分母因此多算一整季 —— 数字完全合理,没有任何提示。
+        win = rv[i - 2:i + 2]
+        gap = quarterly.gap_in([x[0] for x in win])
+        if gap:
+            skipped.append(f"{win[0][0]}~{win[-1][0]}({gap})")
+            continue
+        fwd[rv[i][1]] = sum(x[2] for x in win)
     all_ends = sorted(x[1] for x in rv)
     pts, dropped = [], 0
     for d, close in daily(raw, code):
@@ -200,6 +212,10 @@ def forward_ps_band(raw: Path, code: str, share: float, since="2019") -> dict:
         pts.append({"date": d, "ps": close * share / fwd[cur]})
     if len(pts) < 60:
         return {"ok": False, "why": f"能算出 3+1 PS 的交易日只有 {len(pts)} 天,样本不够"}
+    cov = len(pts) / (len(pts) + dropped) * 100
+    if cov < COVERAGE_MIN_PCT:
+        return {"ok": False, "why": f"只有 {cov:.0f}% 的交易日算得出 3+1 PS,"
+                                    f"一半以上的日子是空的,分位数不成立"}
     v = sorted(p["ps"] for p in pts)
 
     def q(x):
@@ -208,10 +224,16 @@ def forward_ps_band(raw: Path, code: str, share: float, since="2019") -> dict:
     return {"ok": True, "n": len(v), "从": pts[0]["date"], "到": pts[-1]["date"],
             "p10": q(.10), "p25": q(.25), "p50": q(.50), "p75": q(.75), "p90": q(.90),
             "均值": statistics.mean(v), "最低": v[0], "最高": v[-1],
-            "算不了的交易日": dropped}
+            "算不了的交易日": dropped, "覆盖率pct": cov, "跨季窗口": skipped}
 
 
-def total_share(raw: Path, code: str):
+def _share_from_report(raw: Path, code: str):
+    """③ 季报披露的总股本(baostock query_profit_data 的 `totalShare`)。
+
+    它的口径是「截至最近一次定期报告披露时点」——**跟不上季报之间的股本变动**
+    (定增、可转债转股、股权激励行权)。300308 就栽在这上面:
+    2026-06-30 报的 11.15 亿股,而 07-30~09-01 之间增发到 11.78 亿股。
+    """
     for env in envs(newest(raw, f"financials/{code}/*[0-9].json")).values():
         if "query_profit_data" in env.get("source", "") and env.get("data"):
             r = dict(zip(PROFIT_FIELDS, env["data"][0]))
@@ -220,6 +242,99 @@ def total_share(raw: Path, code: str):
             except (KeyError, TypeError, ValueError):
                 pass
     return None, None
+
+
+def _share_from_holders(raw: Path, code: str):
+    """② 东财股东户数接口里的 `TOTAL_A_SHARES`(A 股总股本)+ 它的截止日。"""
+    for env in envs(newest(raw, f"chips/{code}/*-股东户数.json")).values():
+        if not (env.get("ok") and env.get("data")):
+            continue
+        r = env["data"][0]
+        try:
+            v = float(r.get("TOTAL_A_SHARES"))
+        except (TypeError, ValueError):
+            continue
+        if v > 0:
+            return v, str(r.get("END_DATE") or "")[:10]
+    return None, None
+
+
+def _share_from_petmm(raw: Path, code: str):
+    """① 从日线最后一根的 `peTTM` 反推:股本 = peTTM × TTM 归母净利 ÷ 收盘价。
+
+    **为什么这条最及时**:baostock 的 `peTTM` 是**每天**按当天的股本重算的,
+    所以它隐含的股本就是最新股本。季报只在披露日更新,中间的增发它看不见。
+
+    它在不适用时会怎样(这条必须逐个堵死,否则会给出一个看着正常的错股本):
+      · 最近四季净利之和 ≤0 → 反推的分母是负的或接近 0,股本会飞掉 → 弃用
+      · 最近四季不连续(中间缺一季)→ TTM 不是真的 TTM → 弃用
+      · `peTTM` 缺失或 ≤0 → 弃用
+      · 反推值和季报股本差出 2 倍以上 → 多半是两边口径对不上(比如 TTM 用了
+        净利润总额而 peTTM 用归母),**宁可弃用也不拿它去算市值** ——
+        股本错 5% 只是 PE 偏一点,股本错一倍会让整份报告的每个数都错
+    """
+    qs = quarterly.build(raw, code, since="2019")["quarters"]
+    have = [r for r in qs if r.get("单季归母净利") is not None][-4:]
+    if len(have) < 4 or quarterly.gap_in([r["period"] for r in have]):
+        return None, None, "最近四季归母净利不齐或不连续,凑不出 TTM"
+    ttm = sum(r["单季归母净利"] for r in have)
+    if ttm <= 0:
+        return None, None, f"最近四季归母净利合计 {ttm / 1e8:.2f} 亿(非正),反推没有含义"
+    last = None
+    for env in envs(newest(raw, f"quotes/{code}/*-qfq.json")).values():
+        if env.get("ok") and env.get("data"):
+            last = dict(zip(K_FIELDS, env["data"][-1]))
+            break
+    if not last:
+        return None, None, "没有日线"
+    try:
+        pe, close = float(last["peTTM"]), float(last["close"])
+    except (TypeError, ValueError, KeyError):
+        return None, None, "日线最后一根没有 peTTM"
+    if pe <= 0 or close <= 0:
+        return None, None, f"日线最后一根 peTTM={last.get('peTTM')},不能反推"
+    return pe * ttm / close, last["date"], f"TTM 归母净利 {ttm / 1e8:,.2f} 亿"
+
+
+def total_share(raw: Path, code: str) -> dict:
+    """总股本 —— 三个来源,取最及时的那个,并把三个都留在返回值里。
+
+    ① 日线 `peTTM` 反推(每天重算,**最及时**)
+    ② 东财股东户数接口 `TOTAL_A_SHARES`
+    ③ 季报 `totalShare`(只到最近一次定期报告)
+
+    **为什么不能只用 ③**:季报之间发生的增发/转股它看不见,而市值 = 价 × 股本,
+    股本偏低 → 市值偏低 → PE 偏低 → 这只票在横向比估值时显得比实际便宜。
+    2026-09-02 实测 300308 差 5.6%,三个独立来源互相印证是 ③ 落后了。
+
+    ①②③ 都拿不到时返回 `{"ok": False}`,调用方拒绝出结论 ——
+    没有股本就没有市值,**不猜一个**。
+    """
+    p_share, p_date = _share_from_report(raw, code)
+    h_share, h_date = _share_from_holders(raw, code)
+    i_share, i_date, i_why = _share_from_petmm(raw, code)
+    if i_share and p_share and not (0.5 < i_share / p_share < 2.0):
+        i_why = (f"反推得 {i_share / 1e8:,.4f} 亿股,和季报的 {p_share / 1e8:,.4f} 亿股"
+                 f"差 {abs(i_share / p_share - 1) * 100:.0f}%,超出可信范围,弃用")
+        i_share = None
+    picked, src, asof = None, "", ""
+    if i_share:
+        picked, src, asof = i_share, "日线 peTTM 反推(最新股本)", i_date
+    elif h_share:
+        picked, src, asof = h_share, "东财股东户数 TOTAL_A_SHARES", h_date
+    elif p_share:
+        picked, src, asof = p_share, "季报 totalShare", p_date
+    if not picked:
+        return {"ok": False, "why": "三个来源(peTTM 反推 / 股东户数 / 季报)"
+                                    "一个都拿不到总股本"}
+    diff = (picked / p_share - 1) * 100 if p_share else None
+    return {"ok": True, "股本": picked, "来源": src, "截止": asof,
+            "季报股本": p_share, "季报截止": p_date,
+            "户数接口股本": h_share, "户数接口截止": h_date,
+            "反推股本": i_share, "反推说明": i_why,
+            "与季报差pct": diff,
+            # 差超过 1% 就不是四舍五入,是季报之后真的发生过股本变动 —— 要写进报告。
+            "有股本变动": bool(diff is not None and abs(diff) > 1.0)}
 
 
 def forward_pe_band(raw: Path, code: str, share: float, since="2019") -> dict:
@@ -241,12 +356,21 @@ def forward_pe_band(raw: Path, code: str, share: float, since="2019") -> dict:
         return {"ok": False, "why": f"单季净利只有 {len(ni)} 期,算不出 3+1 PE 带(至少要 8 期)"}
 
     # 3+1 净利:以每个季度为锚,取它自己和前两季(都已披露)+ 它的下一季
-    fwd = {}
+    fwd, skipped = {}, []
     for i in range(2, len(ni) - 1):
-        s = sum(x[2] for x in ni[i - 2:i + 2])
-        fwd[ni[i][1]] = s                        # key = 该季度末日期 YYYYMMDD
+        # ⚠ `ni[i-2:i+2]` 是**下标**窗口。`ni` 已经把算不出来的季度过滤掉了,
+        #   所以序列有洞时这四个下标会横跨五个季度 —— 分母多算一整季,
+        #   PE 相应偏低,而报告一句提示都不会有。所以先判连续,不连续就整格跳过。
+        win = ni[i - 2:i + 2]
+        gap = quarterly.gap_in([x[0] for x in win])
+        if gap:
+            skipped.append(f"{win[0][0]}~{win[-1][0]}({gap})")
+            continue
+        fwd[ni[i][1]] = sum(x[2] for x in win)   # key = 该季度末日期 YYYYMMDD
     if not fwd:
-        return {"ok": False, "why": "凑不出任何「3+1」窗口(至少要 4 期连续单季净利)"}
+        return {"ok": False,
+                "why": "凑不出任何「3+1」窗口 —— 单季净利序列里有洞,"
+                       "每个四季窗口都跨季:" + "; ".join(skipped[:4])}
 
     all_ends = sorted(x[1] for x in ni)          # 所有季度末,含算不出窗口的
     pts, dropped = [], 0
@@ -267,6 +391,18 @@ def forward_pe_band(raw: Path, code: str, share: float, since="2019") -> dict:
                     "fwd_pe": close * share / fwd[cur]})
     if len(pts) < 60:
         return {"ok": False, "why": f"能算出 3+1 PE 的交易日只有 {len(pts)} 天,样本不够"}
+    # ⚠ **「够 60 天」不等于「这条带成立」。** 深科达 1332 个交易日里只有 559 天
+    #   算得出 3+1 PE(773 天因为四季净利之和 ≤0 被丢掉),而且丢掉的是连成片的
+    #   时段 —— 剩下的 42% 不是全历史的一个样本,是某几段行情的切片。
+    #   在这种带上取分位,p50 回答的不是「这只票历史上通常给多少倍」。
+    #   所以过半的日子算不出来就判这条尺在这只票上不成立,**不给一个能读的分位**。
+    cov = len(pts) / (len(pts) + dropped) * 100
+    if cov < COVERAGE_MIN_PCT:
+        return {"ok": False,
+                "why": f"一半以上交易日算不出 3+1 PE(能算的只有 {len(pts)} 天 / "
+                       f"共 {len(pts) + dropped} 天 = {cov:.0f}%,多半是那几季净利为负"
+                       f"或接近零),**这条尺在这只票上不成立** —— "
+                       f"一条大半是空洞的带,分位数不能当分位数读"}
 
     v = sorted(p["fwd_pe"] for p in pts)
 
@@ -277,7 +413,7 @@ def forward_pe_band(raw: Path, code: str, share: float, since="2019") -> dict:
             "p10": q(.10), "p25": q(.25), "p50": q(.50), "p75": q(.75), "p90": q(.90),
             "均值": statistics.mean(v), "最低": v[0], "最高": v[-1],
             "最近一个可算日": pts[-1]["date"], "最近值": pts[-1]["fwd_pe"],
-            "算不了的交易日": dropped,
+            "算不了的交易日": dropped, "覆盖率pct": cov, "跨季窗口": skipped,
             "为什么最近算不了": "最近一个季度的「下一季」实际净利还没发生,分母缺一块。"
                               "**不拿预测去填** —— 填了这条带就不再是事实。"
                               "现价那一格用预测补上,是因为它本来就是我们的预测;"
@@ -286,9 +422,10 @@ def forward_pe_band(raw: Path, code: str, share: float, since="2019") -> dict:
 
 def build(code: str, raw: Path, target: str | None = None) -> dict:
     import forecast
-    share, share_date = total_share(raw, code)
-    if not share:
-        raise SystemExit(f"{code}: 拿不到总股本。先跑 fetch_all --group financials")
+    sh = total_share(raw, code)
+    if not sh.get("ok"):
+        raise SystemExit(f"{code}: {sh.get('why')}。先跑 fetch_all --group financials")
+    share, share_date = sh["股本"], sh["截止"]
     band = forward_pe_band(raw, code, share)
     f = forecast.build(code, raw, target)
     qs = quarterly.build(raw, code, since="2023")["quarters"]
@@ -313,7 +450,7 @@ def build(code: str, raw: Path, target: str | None = None) -> dict:
         base_r = sum(hrev[-3:])
         our_rev = {"low": base_r + rb["low"], "mid": base_r + rb["mid"],
                    "high": base_r + rb["high"]}
-    return {"code": code, "总股本": share, "股本截止日": share_date,
+    return {"code": code, "总股本": share, "股本截止日": share_date, "股本来源": sh,
             # ⚠ **把 raw 一起带出去。** 下游的行业 / 领先层 / 基准率都要读盘,
             #   而它们只拿得到这个 dict。不带的话,调用方要么各自再传一遍 raw
             #   (五个调用点,漏一个就静默用默认路径),要么去猜工作台在哪。
@@ -371,7 +508,12 @@ def main() -> int:
     for c in a.codes:
         v = build(c, Path(a.raw), a.target)
         b = v["前瞻PE带"]
-        print(f"── {c}  总股本 {v['总股本']/1e8:.2f} 亿股({v['股本截止日']})")
+        print(f"── {c}  总股本 {v['总股本']/1e8:.4f} 亿股({v['股本截止日']},"
+              f"{v['股本来源']['来源']})")
+        if v["股本来源"].get("有股本变动"):
+            print(f"   ⚠ 比季报口径({v['股本来源']['季报股本']/1e8:.4f} 亿股,"
+                  f"{v['股本来源']['季报截止']})多 "
+                  f"{v['股本来源']['与季报差pct']:+.2f}% —— 季报之后有过股本变动")
         if v["现价"]:
             print(f"   现价 {v['现价']['close']:.2f}({v['现价']['date']})"
                   f"  市值 {v['现价']['close']*v['总股本']/1e8:,.0f} 亿")

@@ -590,12 +590,79 @@ def fetch_research(code, out, months=6, max_pdf=12):
 
 # 海外电话会纪要:URL 规律固定,站内搜索是 JS 的,所以按「代码 + 季度」构造后直取。
 # 拿不到就如实记 ok=false —— 不猜、不用旧的顶替。
-def fetch_transcripts(out, urls: list[str]):
+
+# ⚠ **正文里到底提没提 capex,要大小写不敏感地查两种写法。**
+#   原来只查小写的 `apital expenditure`,而 Alphabet 的纪要通篇写作 `CapEx` ——
+#   2026-09-02 实测:那份纪要里 `CapEx` 出现 14 次,信封里的 `has_capex` 却是 false。
+#   下游要是靠这个布尔值决定「这份纪要值不值得读」,会把一份有内容的文件当空的跳过。
+CAPEX_WORDS = ("capital expenditure", "capital spend", "capex")
+
+
+def capex_hits(body: str) -> int:
+    low = body.lower()
+    return sum(low.count(w) for w in CAPEX_WORDS)
+
+
+def latest_fool_slug(ticker: str, ua: dict):
+    """从 Motley Fool 的个股页找**最新一场**电话会纪要的地址。
+
+    为什么要有这条备用路:主路是按「公司-季度」构造 URL 直取,那要求我们
+    事先知道最新是哪一季。2026-09-02 实测:盘上 GOOGL 最新的纪要停在 Q1 2026,
+    而 Q2 2026 那场(7-22)早就开完了,**而且那场恰好是专门讲 capex 上调的** ——
+    我们缺的正是这个类目里最新、最相关的一条。
+
+    找不到就返回 None,调用方**明写「尚未发布」**,不拿旧的那份顶替 ——
+    旧指引和新指引很可能方向相反,而报告不会有任何提示。
+    """
+    import requests, re as _re
+    try:
+        r = requests.get(f"https://www.fool.com/quote/nasdaq/{ticker.lower()}/",
+                         headers=ua, timeout=30)
+    except Exception:
+        return None
+    # ⚠ 页面里这些地址有两种写法:普通 `href="/earnings/…"`,以及嵌在 JSON 里、
+    #   斜杠被转义成 `\/` 的那种。只认第一种会一条都找不到 ——
+    #   2026-09-02 实测就是这样:返回 None,看起来像「站上没有」,
+    #   实际是我们的正则没覆盖到。**「找不到」和「没找对」要能分开。**
+    body = r.text.replace("\\/", "/")
+    found = _re.findall(
+        r"/earnings/call-transcripts/(\d{4})/(\d{2})/(\d{2})/([a-z0-9-]+)/", body)
+    if not found:
+        return None
+    y, m, dd, slug = max(found)
+    return f"https://www.fool.com/earnings/call-transcripts/{y}/{m}/{dd}/{slug}/"
+
+
+def fetch_transcripts(out, urls: list[str], tickers: list[str] | None = None):
     """下游/同业的电话会纪要正文。**下期 capex 指引和短周期/长周期拆分只在这里**,
-    SEC XBRL 只有已发生的总额。"""
+    SEC XBRL 只有已发生的总额。
+
+    `tickers` 给了的话,先去各自的个股页找最新一场纪要的地址,拼进 `urls`。
+    """
     import requests, re as _re
     ua = {"User-Agent": "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) "
                         "AppleWebKit/537.36 (KHTML, like Gecko) Chrome/126 Safari/537.36"}
+    urls = list(urls)
+    for tk in (tickers or []):
+        u = latest_fool_slug(tk, ua)
+        if u:
+            key = u.rstrip("/").rsplit("/", 1)[-1].replace("-earnings-call-transcript", "")
+            have = (out / "transcripts" / key).is_dir()
+            if u not in urls:
+                urls.append(u)
+            print(f"    · {tk} Motley Fool 上最新一场:{u}"
+                  + ("(盘上已经有这一场,重抓一遍)" if have
+                     else "(**盘上还没有,这次补上**)"))
+        else:
+            print(f"    · {tk} **Motley Fool 上没找到更新的纪要**"
+                  f"(个股页列表里没有 call-transcripts 链接)—— "
+                  f"如实记下来,不拿旧的那份顶替")
+            write(out, "transcripts", f"{tk.lower()}-latest-probe", "",
+                  env("Motley Fool 个股页",
+                      url=f"https://www.fool.com/quote/nasdaq/{tk.lower()}/",
+                      ok=False,
+                      err="列表页里没有 call-transcripts 链接 —— "
+                          "多半是 Motley Fool 尚未发布这一季的纪要"))
     for u in urls:
         m = _re.search(r"/([a-z0-9-]+)-earnings", u)
         key = (m.group(1) if m else u.rstrip("/").rsplit("/", 1)[-1])[:60]
@@ -607,14 +674,16 @@ def fetch_transcripts(out, urls: list[str]):
             d = out / "transcripts" / key
             d.mkdir(parents=True, exist_ok=True)
             (d / f"{TODAY}.txt").write_text(body, encoding="utf-8")
+            hits = capex_hits(body)
             write(out, "transcripts", key, "",
                   env("Motley Fool transcript", url=u,
                       params={"note": "capex 指引 / 短周期占比 / 公司自己的下期指引"},
                       ok=bool(body), rows=len(body),
-                      data={"chars": len(body), "has_capex": "apital expenditure" in body,
+                      data={"chars": len(body), "has_capex": hits > 0,
+                            "capex_mentions": hits,
                             "path": str(d / f"{TODAY}.txt")}))
             print(f"    · {key:<44} {len(body):>7,} 字符"
-                  + ("  含 capex" if "apital expenditure" in body else ""))
+                  + (f"  提到 capex {hits} 次" if hits else "  没提 capex"))
         except Exception as e:
             write(out, "transcripts", key, "", env("Motley Fool transcript", url=u,
                                                    ok=False, err=repr(e)))
@@ -675,6 +744,10 @@ def main() -> int:
     ap.add_argument("--macro", action="store_true", help="抓宏观")
     ap.add_argument("--transcripts", nargs="*", metavar="URL",
                     help="抓海外电话会纪要(给 Motley Fool 的 URL)")
+    ap.add_argument("--transcripts-latest", nargs="*", metavar="TICKER",
+                    help="给 ticker(如 GOOGL),自动去它的 Motley Fool 个股页"
+                         "找**最新一场**纪要 —— 主路要求我们事先知道最新是哪一季,"
+                         "而那恰恰是最容易落后的地方")
     ap.add_argument("--out", default="data/raw")
     ap.add_argument("--list", action="store_true")
     a = ap.parse_args()
@@ -688,7 +761,8 @@ def main() -> int:
 
     out = Path(a.out)
     codes = [c.strip() for c in a.codes.split(",") if c.strip()]
-    if not codes and not a.peers and not a.macro and a.transcripts is None:
+    if (not codes and not a.peers and not a.macro and a.transcripts is None
+            and not a.transcripts_latest):
         ap.error("至少给 --codes / --peers / --macro / --transcripts 之一")
 
     for code in codes:
@@ -710,9 +784,9 @@ def main() -> int:
     if a.macro:
         print("\n[宏观]")
         fetch_macro(out)
-    if a.transcripts:
+    if a.transcripts or a.transcripts_latest:
         print("\n[海外电话会纪要]")
-        fetch_transcripts(out, a.transcripts)
+        fetch_transcripts(out, a.transcripts or [], a.transcripts_latest or [])
 
     if _BS.get("m"):
         _BS["m"].logout()

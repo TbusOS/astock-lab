@@ -45,6 +45,23 @@ def yi(v, nd=1):
     return "—" if v is None else f"{v / 1e8:,.{nd}f}"
 
 
+def net_equity(j: dict) -> float | None:
+    """净资产 = **总资产 − 总负债**,全套文档只认这一个口径。
+
+    ⚠ 2026-09-02 之前 `account.json` 里还有一个 `净资产` 字段,是从券商界面
+    抄下来的(897,100.56),和「总资产 − 总负债」(897,124.84)差 24.28 元。
+    差多少不重要,**同一份文档里并存两个净资产**才是问题:
+    五份个股报告的仓位上限用截图那个数,账户文档第 6/7 节用算式那个数,
+    读者没法判断哪个是对的,而文档开篇写着「没有估计值」。
+    现在截图那个改名 `_截图净资产`,只留作和界面对账,不进任何计算。
+    """
+    a = j.get("account") or {}
+    ta, td = a.get("总资产"), a.get("总负债")
+    if ta is None or td is None:
+        return None
+    return ta - td
+
+
 def load_position(fp: Path | None, code: str) -> dict:
     """读这只票的持仓。两种文件都认:
 
@@ -90,13 +107,17 @@ def load_position(fp: Path | None, code: str) -> dict:
                          #   总市值里有借来的钱:这个账户总市值 150 万、净资产 90 万,
                          #   按总市值算「占 32%」听着还好,按自己的钱算是 54%。
                          #   风险要按自己的钱衡量 —— 亏的是自己的钱,不是券商的。
-                         "净资产": acct.get("净资产"),
+                         "净资产": net_equity(j),
+                         "截图净资产": acct.get("_截图净资产"),
                          "总市值": acct.get("总市值"),
                          "总资产": acct.get("总资产"),
                          "单票最大可承受亏损_pct": j.get(
                              "_单票最大可承受亏损_pct_of_净资产"),
                          "行业最大可承受亏损_pct": j.get(
                              "_行业最大可承受亏损_pct_of_净资产"),
+                         # 与估值模型无关的两条硬集中度线。**取小的那条起作用。**
+                         "单票硬上限_pct": j.get("_单票硬上限_pct_of_净资产"),
+                         "行业硬上限_pct": j.get("_单行业硬上限_pct_of_净资产"),
                          "账户类型": j.get("_账户类型")}}
     # holdings.json
     h = (j.get("holdings") or {}).get(code) or {}
@@ -254,6 +275,11 @@ def sec_chips(raw: Path, code: str, n: int, L) -> None:
         L.append("")
         wrote = True
 
+    # ⚠ **「没抓到」的原因要从信封里读,不能写死一句猜的。**
+    #   2026-09-02 之前这里对所有票都印「深交所接口按日提供,当日数据可能还没发布」——
+    #   而 688328 是上交所科创板,它的那份信封里记的是上交所接口报的 ValueError。
+    #   猜的原因会把排查方向带偏:读者以为是「数据还没发」,实际要查的是接口。
+    envelopes = envs(newest(raw, f"chips/{code}/*-融资融券.json"))
     v = pick(raw, f"chips/{code}/*-融资融券.json")
     if v and v["data"]:
         L.append(f"**融资融券**:{len(v['data'])} 条记录,见 "
@@ -261,7 +287,20 @@ def sec_chips(raw: Path, code: str, n: int, L) -> None:
         L.append("")
         wrote = True
     else:
-        L.append("**融资融券**:本轮没抓到(深交所接口按日提供,当日数据可能还没发布)。")
+        which = ("上交所(`stock_margin_detail_sse`)" if code[0] == "6"
+                 else "深交所(`stock_margin_detail_szse`)")
+        err = next((e.get("error") for e in envelopes.values()
+                    if e.get("error")), None)
+        got_empty = any(e.get("ok") and not e.get("data") for e in envelopes.values())
+        L.append(f"**融资融券:本轮没有数据。** 这只票按代码走的是{which}接口"
+                 + (f",这次调用**直接报错**:`{err}` —— "
+                    f"这是接口对当天返回了空表、解析时列数对不上。"
+                    f"**不是「这只票没人融资融券」,是我们这一轮没取到。**"
+                    if err else
+                    ",接口调通了但返回 0 行 —— 交易所按日发布,当天的数据通常"
+                    "要收盘后才有,盘中跑就是空的。" if got_empty else
+                    ",这一轮没有留下任何信封。")
+                 + f" 重跑:`tools/fetch_all.py --codes {code} --group chips`。")
         L.append("")
 
     if not wrote:

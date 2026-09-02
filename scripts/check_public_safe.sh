@@ -24,6 +24,17 @@ hit() { printf "  ❌ %-26s %s\n" "$1" "$2"; fail=$((fail+1)); }
 ok()  { printf "  ✅ %s\n" "$1"; }
 
 # 只查会进 git 的文件;.git 与 data/ 不查
+# ⚠ **二进制文件不扫。** `grep -a` 把 PDF / 图片当文本读,里面的字节序列
+#   会命中任何一条正则 —— 2026-09-02 实测:`docs/DATA-SOURCES.pdf` 里
+#   字体边界框 `/FontBBox [-203.125 ...]` 被「真实成交价 x.xxx」判成个人成交价,
+#   而那是渲染出来的产物,里面不可能有个人信息(源 md 已经在扫描范围里)。
+#   一条**永远为真的误报**比没有检查更糟:它让人习惯性地忽略这道检查的红字。
+BINARY_EXCLUDES=(--exclude='*.pdf' --exclude='*.png' --exclude='*.jpg'
+                 --exclude='*.jpeg' --exclude='*.gif' --exclude='*.webp'
+                 --exclude='*.ico' --exclude='*.woff' --exclude='*.woff2'
+                 --exclude='*.ttf' --exclude='*.otf' --exclude='*.parquet'
+                 --exclude='*.xlsx' --exclude='*.docx' --exclude='*.zip')
+
 scan() {  # scan <名称> <grep 正则> [额外排除正则]
   local name="$1" pat="$2" excl="${3:-}"
   local out
@@ -31,7 +42,8 @@ scan() {  # scan <名称> <grep 正则> [额外排除正则]
         --exclude-dir=.git --exclude-dir=data --exclude-dir=repos \
         --exclude-dir=__pycache__ --exclude-dir=.venv \
         --exclude=desensitize.py --exclude=check_public_safe.sh \
-        --exclude='personal.patterns*' --exclude='personal.rules*' 2>/dev/null)
+        --exclude='personal.patterns*' --exclude='personal.rules*' \
+        "${BINARY_EXCLUDES[@]}" 2>/dev/null)
   [ -n "$excl" ] && out=$(printf '%s' "$out" | grep -vE "$excl")
   out=$(printf '%s' "$out" | grep -v '^$')
   if [ -n "$out" ]; then

@@ -20,6 +20,8 @@
 from __future__ import annotations
 
 import argparse
+import re
+from pathlib import Path
 
 FACT, PRED = "事实", "别人的预测"
 
@@ -110,7 +112,9 @@ CATALOG = [
      "https://data.eastmoney.com/dxf/", FACT,
      "data/raw/chips/<代码>/<日期>-解禁.json",
      "tools/fetch_all.py --codes <代码> --group chips"),
-    ("筹码", "akshare stock_margin_detail_szse", "深交所融资融券明细",
+    ("筹码", "akshare stock_margin_detail_sse / _szse",
+     "融资融券明细。**按交易所自动切**:6 开头(沪市 / 科创板)走上交所接口,"
+     "0 / 3 开头(深市 / 创业板)走深交所接口 —— 给沪市股票调深交所接口会直接报错",
      "https://www.szse.cn/disclosure/margin/margin/", FACT,
      "data/raw/chips/<代码>/<日期>-融资融券.json",
      "tools/fetch_all.py --codes <代码> --group chips"),
@@ -170,9 +174,11 @@ CATALOG = [
     ("★ 别人的预测", "东财 reportapi + pdf.dfcfw.com", "研报列表与 PDF 原文",
      "https://data.eastmoney.com/report/", PRED,
      "data/raw/research/<代码>/<日期>-list.json", "tools/fetch_all.py --codes <代码> --group research"),
-    ("★ 别人的预测", "yfinance analyst", "海外标的的目标价、评级变动、一致预期",
-     "https://finance.yahoo.com/quote/<美股代码>/analysis", PRED,
-     "data/raw/consensus/<美股代码>/<日期>-yahoo.json", "tools/fetch_all.py --peers"),
+    ("★ 别人的预测", "yfinance analyst",
+     "**这只 A 股自己**的目标价、评级变动、一致预期(货币 CNY)—— "
+     "不是它的海外对标公司",
+     "https://finance.yahoo.com/quote/", PRED,
+     "data/raw/consensus/<代码>/<日期>-yahoo.json", "tools/fetch_all.py --peers"),
 
     # ── 人工投喂 ──────────────────────────────────────────────────────
     ("人工投喂", "外部研报 PDF", "投行研报(订阅制,没有自动渠道,靠人放进目录)",
@@ -198,8 +204,42 @@ def rows(groups=None, code=None):
     return out
 
 
-def markdown(groups=None, code=None, heading="数据来源:每条都能点开核对") -> str:
-    """heading=None 时不出标题 —— 调用方自己已经写了小节标题的场景。"""
+def _glob_of(path: str) -> str:
+    """把「落在哪」那一列变成一个能 glob 的模式。
+
+    `data/raw/financials/<代码>/<日期>-利润表.json 等` → `data/raw/financials/*/*`
+    占位符一律换成 `*`;末尾的「 等」是给人看的,不是路径的一部分。
+    """
+    p = re.sub(r"<[^>]+>", "*", path.split(" 等")[0].strip())
+    return p
+
+
+def present(rows, root) -> tuple[list, list]:
+    """按「落在哪」glob 一遍,分成 (盘上真有文件的, 没有的)。
+
+    **为什么要查**:数据来源表的承诺是「每条都能点开核对」。
+    2026-09-02 实测:5 份报告里 4 份列了 `data/raw/research/<代码>/…-list.json`,
+    而那个目录只有 1 只票真的存在 —— 对另外 4 只,这一行兑现不了。
+    列一条查无此文件的来源,比不列更糟:它让人以为核对过了。
+
+    它在不适用时会怎样:`root` 没给(命令行直接看目录)时不过滤,全列出来 ——
+    那时候本来就没有「这一轮」的概念。
+    """
+    if root is None:
+        return list(rows), []
+    root = Path(root)
+    got, miss = [], []
+    for r in rows:
+        (got if any(root.glob(_glob_of(r[5]))) else miss).append(r)
+    return got, miss
+
+
+def markdown(groups=None, code=None, heading="数据来源:每条都能点开核对",
+             root=None) -> str:
+    """heading=None 时不出标题 —— 调用方自己已经写了小节标题的场景。
+
+    `root` 给了就**只列盘上真有文件的源**,其余归到表尾的「本轮没有数据」。
+    """
     L = ([f"## {heading}", ""] if heading else [])
     L.append("**「事实 / 别人的预测」这一列最重要。** 事实类(公司报表、SEC 申报、"
              "交易所披露、价格)可以进模型;预测类**只放在报告的市场对照那一节**,"
@@ -207,8 +247,9 @@ def markdown(groups=None, code=None, heading="数据来源:每条都能点开核
     L.append("")
     # 六列会把「拿到什么」挤成每行两个字,读不了。
     # 落盘路径和重跑命令在同一组里基本一样,提到组标题下面写一次,表里只留四列。
+    got, miss = present(rows(groups, code), root)
     by_group: dict[str, list] = {}
-    for r in rows(groups, code):
+    for r in got:
         by_group.setdefault(r[0], []).append(r)
 
     for g, rs in by_group.items():
@@ -232,6 +273,16 @@ def markdown(groups=None, code=None, heading="数据来源:每条都能点开核
                     else f"[{url}]({url})")
             k = "**事实**" if kind == FACT else "**预测**"
             L.append(f"| {name} | {what} | {k} | {link} |")
+    if miss:
+        L.append("")
+        L.append("**以下源本轮没有数据**(按「落在哪」那一列 glob 过,盘上查无文件),"
+                 "所以上面的表里没有它们 —— **列一条查无此文件的来源,比不列更糟:"
+                 "它让人以为核对过了**:")
+        L.append("")
+        L.append("| 源 | 本该落在哪 | 怎么补 |")
+        L.append("|---|---|---|")
+        for _, name, _what, _url, _k, path, cmd in miss:
+            L.append(f"| {name} | `{path}` | `{cmd}` |")
     L.append("")
     return "\n".join(L)
 

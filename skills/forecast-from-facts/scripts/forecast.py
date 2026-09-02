@@ -10,13 +10,23 @@
     如果只写一个方法,杰瑞那个数照样会打印出来,而且没有任何提示。
 
     所以每个方法**先自检适用性,不适用就退出并说明理由**,
-    最后只用通过自检的那几个取并集。剩几个方法本身就是信息:
+    最后把通过自检的那几个**取并集**。剩几个方法本身就是信息:
     只剩一个 = 这只票的下季营收我们其实没什么把握。
+
+为什么是并集不是交集(2026-09-02 改,依据是走前回测):
+    五只 × 十个季度的走前回测里,原来那套「先取交集、交集为空才退并集」命中
+    16/46 = 35%;一律取并集命中 28/46 = 61%。原因是三条方法给的区间是
+    **几个历史比值的最大最小值围出来的线段**,不是概率区间 ——
+    两条线段相交得到的是「两边都同意的那一小段」,和「真实值落在里面的概率」
+    没有关系。宽度不到 10% 的 17 个交集只命中 1 个(6%)。
+    **窄不等于有把握,只等于更容易错。** 并集的代价是宽(中位宽度 45%),
+    信息量确实少,但它不骗人。
 
 三个方法互相独立在哪:
     存货法看**供给侧已经花出去的钱**;同比法看**需求侧的增长趋势**;
     环比法看**这门生意本身的季节形状**。三者共用的只有营收这一个观测量,
-    出错的原因互不相同 —— 所以三个都指向同一区间才算真的有把握。
+    出错的原因互不相同。⚠ 但这个独立性**只在平稳期成立** ——
+    三条都是外推,增速拐头那一季会一起慢半拍,而且是同方向错。
 
 依赖:无。读 quarterly.py 的输出。
 """
@@ -47,13 +57,9 @@ def next_period(p: str) -> str:
     return f"{y}{Q_ORDER[i + 1]}" if i < 3 else f"{y + 1}Q1"
 
 
-def _qidx(period: str) -> int:
-    """把 `2025Q3` 变成一个能做减法的序号,用来量两个季度之间隔多远。
-
-    为什么需要它:判「四个点连不连续」不能比年份 —— 2025Q4 和 2026Q1 年份不同
-    但只隔一个季度,2025Q1 和 2025Q4 年份相同却隔三个。年份和距离是两回事。
-    """
-    return int(period[:4]) * 4 + Q_ORDER.index(period[4:])
+# 季度序号和连续性判断住在 quarterly.py —— 三处共用(产业链四个点、
+# 3+1 PE/PS 带的四季窗口、存货法的近四季比值)。各写一份必然漂,而漂了不报错。
+_qidx = quarterly.qidx
 
 
 def prev_period(p: str) -> str:
@@ -101,11 +107,22 @@ def m_inventory(qs, target):
     """
     last = prev_period(target)
     inv = next((r["期末存货"] for r in qs if r["period"] == last), None)
-    ratios = [r["下季营收÷期末存货"] for r in qs if r["下季营收÷期末存货"]][-4:]
+    have = [r for r in qs if r["下季营收÷期末存货"]][-4:]
+    ratios = [r["下季营收÷期末存货"] for r in have]
     if inv is None:
         return {"name": "存货法", "ok": False, "why": f"{last} 没有期末存货数据"}
     if len(ratios) < 3:
         return {"name": "存货法", "ok": False, "why": f"历史比值只有 {len(ratios)} 个样本,不够"}
+    # ⚠ 上面是 `[-4:]`,取的是「最后四个**算得出来**的比值」,不是「最近四个季度」。
+    #   中间缺一季时它会悄悄往回够,四个点横跨五个季度 —— 离散度照样算得出来,
+    #   报告一个字都不会提。所以这里先判连续,不连续就退出并说明缺在哪。
+    gap = quarterly.gap_in([r["period"] for r in have])
+    if gap:
+        return {"name": "存货法", "ok": False,
+                "why": f"近四季比值取不到连续的四个季度:{gap} —— "
+                       f"隔着缺口的四个比值算出来的离散度不代表「近四季」,"
+                       f"拿它判适用性等于用一个跨了五季的窗口冒充四季",
+                "细节": {"取到的季度": [r["period"] for r in have]}}
     d = spread(ratios)
     edge = edge_note(d, DISPERSION_MAX, "%")
     if d > DISPERSION_MAX:
@@ -121,42 +138,6 @@ def m_inventory(qs, target):
                     f"{min(ratios):.2f}~{max(ratios):.2f}x(离散度 {d:.1f}%)"
                     + (edge or ""),
             "失效条件": "周转天数变化、扩产爬坡改变备货节奏、交付集中到某一季"}
-
-
-# 每个方法的说明。**报告里必须把这三段打出来** ——
-# 只写「三个方法里 1 个适用」而不说是哪三个、每个怎么算,读者没法判断这个「1」够不够。
-METHOD_DOC = {
-    "存货法": {
-        "一句话": "拿上季末的存货,乘以这只票历史上「下一季营收 ÷ 上季末存货」的比值区间。",
-        "为什么成立": "制造业要出货就得先有货。期末存货是下一季能交付的物质基础,"
-                      "而且这笔钱**已经花出去了** —— 是行为不是说法,"
-                      "管理层在电话会上怎么讲都改不了这个数。",
-        "算式": "下季营收 = 上季末存货 × 历史比值[最低, 最高]",
-        "什么时候不能用": "这个比值本身不稳的时候。脚本算近四季比值的离散度"
-                          "(极差 ÷ 中位),超过 30% 就判定不适用 —— "
-                          "多半是季节性交付把关系压过去了(比如 Q4 是交付旺季),"
-                          "或者扩产爬坡改变了备货节奏。",
-    },
-    "同比法": {
-        "一句话": "拿去年同一个季度的营收,乘以最近三个季度的同比增速区间。",
-        "为什么成立": "同比自动消掉季节性 —— Q3 比 Q3,不受「Q4 是旺季」影响。"
-                      "对季节性强的生意,这是唯一不用先建季节模型就能用的方法。",
-        "算式": "下季营收 = 去年同期营收 × (1 + 近三季同比[最低, 最高])",
-        "什么时候不能用": "增速本身在快速拐弯的时候。脚本的判断是:"
-                          "近三季同比的跨度超过 100 个百分点就不适用 —— "
-                          "那说明增速在剧烈变化,拿过去的增速外推没有意义。",
-    },
-    "环比法": {
-        "一句话": "拿上一季营收,乘以这只票历史上**同一个季度转换**的环比倍数。",
-        "为什么成立": "很多生意的季节形状是稳定的(Q1 春节淡、Q4 交付旺)。"
-                      "只取同一个转换(历年的 Q2→Q3),不混用不同转换 —— "
-                      "混用等于把刚消掉的季节性又搅回去。",
-        "算式": "下季营收 = 上季营收 × 历年同一转换的环比[最低, 最高]",
-        "什么时候不能用": "季节形状不稳定的时候。脚本判断:历年同一转换的环比"
-                          "离散度超过 45% 就不适用(环比天然比存货法散,所以阈值放宽)。"
-                          "样本少于 2 个也不用 —— 两个点不构成规律。",
-    },
-}
 
 
 # ── 方法 B:同比法(需求侧)────────────────────────────────────────────
@@ -472,6 +453,46 @@ def _chain(code: str, qs, raw: Path):
                   f"**这不是数据没抓到,是这条链本身增速温和** —— 再去取数也补不出来。")
 
 
+def load_backtest(raw: Path) -> dict | None:
+    """读走前回测的汇总(`data/backtest/revenue-summary.json`)。
+
+    **报告里那几个「历史上这套方法准不准」的数字全部从这里读,一个都不写死。**
+    写死的下场:换一批票、多攒几个季度之后,那几个百分比还在讲上一版的故事,
+    而且不报错。文件不在就返回 None,报告写「未回测」——
+    「没跑过」和「跑过、结果是这样」是两件事。
+
+    生成:`tools/backtest.py --walkforward --raw data/raw`
+    """
+    p = raw.parent / "backtest" / "revenue-summary.json"
+    if not p.exists():
+        return None
+    try:
+        j = json.loads(p.read_text(encoding="utf-8"))
+    except json.JSONDecodeError:
+        return None
+    return j if j.get("并集") else None
+
+
+def _mid_yoy(qs, target: str, band: dict | None, profit: dict | None):
+    """预测中枢相对**去年同一个季度**的同比 → (百分数, 用的是哪个口径, 基数期)。
+
+    先用归母净利(那是盈利侧真正关心的量),去年同期净利 ≤0 时同比没有含义
+    (−1 亿 → +1 亿算 +200%?),这时候退到营收。两个都拿不到就返回 None ——
+    **不拿 0 顶替**:0 的意思是「持平」,拿不到的意思是「不知道」,两回事。
+    """
+    prev = f"{int(target[:4]) - 1}{target[4:]}"
+    row = next((r for r in qs if r["period"] == prev), None)
+    if not row:
+        return None, "", prev
+    base_ni = row.get("单季归母净利")
+    if profit and profit.get("mid") is not None and base_ni and base_ni > 0:
+        return (profit["mid"] / base_ni - 1) * 100, "归母净利", prev
+    base_rev = row.get("单季营收")
+    if band and band.get("mid") is not None and base_rev and base_rev > 0:
+        return (band["mid"] / base_rev - 1) * 100, "营收", prev
+    return None, "", prev
+
+
 def build(code: str, raw: Path, target: str | None) -> dict:
     d = quarterly.build(raw, code, since="2022")
     qs = d["quarters"]
@@ -484,19 +505,23 @@ def build(code: str, raw: Path, target: str | None) -> dict:
     good = [m for m in methods if m.get("ok")]
     band, band_note, consistent = None, "", True
     if good:
-        lo, hi = max(m["low"] for m in good), min(m["high"] for m in good)
-        if lo <= hi:
-            # 交集:**所有能用的方法都同意**的那一段。比并集窄得多,而且更有信息 ——
-            # 并集只说"至少一个方法这么认为",交集说"没有一个方法反对"。
-            band = {"low": lo, "high": hi,
-                    "mid": statistics.median([m["mid"] for m in good])}
-            band_note = "交集(所有可用方法都同意的区间)"
-        else:
-            # 不重叠本身就是结论:我们的方法互相矛盾,这时候给并集并且明说
-            band = {"low": min(m["low"] for m in good), "high": max(m["high"] for m in good),
-                    "mid": statistics.median([m["mid"] for m in good])}
-            band_note = "并集 —— ⚠ **几个方法的区间不重叠**,它们互相矛盾"
-            consistent = False
+        # ── 2026-09-02 改:交集 → 并集。**这一条是被数据否决的,不是拍的。**
+        #   46 个走前回测的季度里,生产做法(先交集、空了退并集)命中 16 个(35%),
+        #   一律取并集命中 28 个(61%)。三条方法各自的区间是「几个历史比值的
+        #   最大值和最小值」围出来的线段,不是概率区间 —— 两条线段相交得到的是
+        #   「两边都同意的那一小段」,和「真实值有多大概率落在里面」没有关系。
+        #   宽度不到 10% 的 17 个交集只命中 1 个(6%)。
+        #   代价说清楚:并集宽(中位 45%),信息量确实少,但它不骗人。
+        lo = min(m["low"] for m in good)
+        hi = max(m["high"] for m in good)
+        overlap = max(m["low"] for m in good) <= min(m["high"] for m in good)
+        # 中枢 = 各可用方法中枢的中位数。**并集下它天然落在区间内**
+        #   (每个方法的 mid 都在自己的 low~high 里,而并集罩住所有方法),
+        #   所以不用再夹一次;真夹到边界说明上游算错了,那要当场报出来而不是抹平。
+        mid = statistics.median([m["mid"] for m in good])
+        band = {"low": lo, "high": hi, "mid": mid}
+        band_note = "并集(至少一个方法这么认为)"
+        consistent = overlap
     mg = margins(qs)
     profit = None
     if band and mg["净利率"]:
@@ -504,7 +529,13 @@ def build(code: str, raw: Path, target: str | None) -> dict:
                   "high": band["high"] * mg["净利率"]["高"] / 100,
                   "mid": band["mid"] * mg["净利率"]["中位"] / 100}
     cp, up_note = _chain(code, qs, raw)
+    yoy, yoy_basis, yoy_base_period = _mid_yoy(qs, target, band, profit)
     return {"code": code, "最新已披露": latest, "预测期": target,
+            # 中枢相对去年同期的同比。**清仓那道盈利侧的门要用它** ——
+            # 「我们自己推的下一季比去年同期还少」是一条能被季报证伪的坏消息,
+            # 而「估值该回到历史某个分位」不是。
+            "中枢同比pct": yoy, "中枢同比口径": yoy_basis,
+            "中枢同比基数期": yoy_base_period,
             "methods": methods, "可用方法数": len(good),
             # 「方法一致」= 可用方法之间到底有没有互相印证。
             # ≤1 个方法时记 True:一个方法无从和谁矛盾,它把握低是由「可用方法数」
@@ -512,6 +543,11 @@ def build(code: str, raw: Path, target: str | None) -> dict:
             "方法一致": consistent,
             "边界判定数": sum(1 for m in methods if m.get("边界")),
             "营收区间": band, "区间取法": band_note,
+            # 区间有多宽(高÷低−1)。回测里 <10% 宽度的区间几乎必错,
+            # 所以这个数要印出来,而不是只印区间本身。
+            "区间宽度pct": ((band["high"] / band["low"] - 1) * 100
+                            if band and band["low"] > 0 else None),
+            "回测": load_backtest(raw),
             "产业链位置": cp,
             "上游说明": up_note,
             "利润率": mg, "归母净利区间": profit,
@@ -523,137 +559,10 @@ def build(code: str, raw: Path, target: str | None) -> dict:
 
 
 def render(f: dict) -> str:
-    def y(v, nd=1):
-        return "—" if v is None else f"{v / 1e8:,.{nd}f}"
-
-    L = [f"### {f['code']} · 我们自己对 {f['预测期']} 的预测", ""]
-    L.append(f"最新已披露:**{f['最新已披露']}**。以下全部由公司自己报表里的数推出,"
-             f"**没有引用任何机构的预测**。")
-    L.append("")
-    L.append("**先说清楚是哪三个方法。** 三者共用的只有营收这一个观测量,"
-             "**出错的原因互不相同** —— 存货法看供给侧已经花出去的钱,"
-             "同比法看需求侧的增长趋势,环比法看这门生意本身的季节形状。"
-             "所以三个都指向同一区间才算真的有把握;只剩一个的时候,"
-             "那个区间没有任何东西可以印证它。")
-    L.append("")
-    for name, doc in METHOD_DOC.items():
-        m = next((x for x in f["methods"] if x["name"] == name), None)
-        mark = "✓ 本次适用" if (m and m.get("ok")) else "✗ 本次不适用"
-        L.append(f"**{name}**　{mark}")
-        L.append("")
-        L.append(f"- **是什么**:{doc['一句话']}")
-        L.append(f"- **为什么这么算**:{doc['为什么成立']}")
-        L.append(f"- **算式**:`{doc['算式']}`")
-        L.append(f"- **什么时候不能用**:{doc['什么时候不能用']}")
-        if m:
-            L.append(f"- **这只票的实际情况**:"
-                     + (m.get("依据", "") if m.get("ok") else m.get("why", "")))
-        L.append("")
-    L.append("三个方法在这只票上的结果:")
-    L.append("")
-    L.append("| 方法 | 能不能用 | 结果 | 依据 / 不能用的原因 |")
-    L.append("|---|---|---:|---|")
-    for m in f["methods"]:
-        if m.get("ok"):
-            L.append(f"| {m['name']} | ✓ | {y(m['low'])} ~ {y(m['high'])} 亿 "
-                     f"| {m['依据']} |")
-        else:
-            L.append(f"| {m['name']} | ✗ | — | {m['why']} |")
-    L.append("")
-
-    n = f["可用方法数"]
-    if not n:
-        L.append("> **三个方法一个都不适用。** 这只票的下季营收我们没有可靠的推法 —— "
-                 "如实写出来,而不是硬给一个数。要补的是更细的数据"
-                 "(分产品/分客户收入、订单、产能),现有财报颗粒不够。")
-        return "\n".join(L)
-
-    edge_n = f.get("边界判定数") or 0
-    if edge_n:
-        L.append(f"> ⚠ **上面有 {edge_n} 个判定踩在阈值边上**(离阈值不到它的 10%)。"
-                 f"阈值两边是两个相反的结论,而差距只有几个点 —— "
-                 f"下个季度重跑时它很可能翻面。翻面时该问的是"
-                 f"「公司变了没有」,多半答案是没变,只是噪声过了线。")
-        L.append("")
-
-    b = f["营收区间"]
-    L.append(f"**{f['预测期']} 单季营收:{y(b['low'])} ~ {y(b['high'])} 亿"
-             f"(中枢 {y(b['mid'])} 亿)**,{n} 个方法取{f['区间取法']}。")
-    if n >= 2 and not f.get("方法一致", True):
-        L.append("")
-        L.append(f"> ⚠ **{n} 个方法都通过了自检,但它们给的区间不重叠 —— 互相矛盾。**"
-                 f"这不构成互相印证,反而比只有一个方法更糟:"
-                 f"至少有一个方法在这只票上是错的,而我们不知道是哪一个。"
-                 f"上面给的是并集,它只说「至少一个方法这么认为」。")
-    if n == 1:
-        L.append("")
-        L.append("> ⚠ **只有 1 个方法适用**,没有第二个来交叉验证。"
-                 "这个区间的可信度比有 2~3 个方法时低一档,用的时候要打折。")
-    L.append("")
-
-    mg = f["利润率"]
-    if mg["毛利率"]:
-        g = mg["毛利率"]
-        L.append(f"- **毛利率**:近四季 {g['低']:.1f}%~{g['高']:.1f}%,中位 {g['中位']:.1f}%")
-    if mg["三费率"]:
-        e = mg["三费率"]
-        L.append(f"- **三费率**:近四季 {e['低']:.1f}%~{e['高']:.1f}%")
-    if mg["财务费用波动"] is not None:
-        fin = mg["财务费用"]
-        L.append(f"- **财务费用**:近四季 {y(fin['低'], 2)} ~ {y(fin['高'], 2)} 亿,"
-                 f"波动 {y(mg['财务费用波动'], 2)} 亿。**这一项主要是汇兑,和生意好坏无关**,"
-                 f"但能吃掉几个点的净利率 —— 它是净利预测里最大的不确定来源。")
-    p = f["归母净利区间"]
-    if p:
-        L.append("")
-        L.append(f"**{f['预测期']} 单季归母净利:{y(p['low'])} ~ {y(p['high'])} 亿"
-                 f"(中枢 {y(p['mid'])} 亿)**,= 营收区间 × 近四季净利率区间。")
-    cp = f.get("产业链位置")
-    if cp:
-        up = cp["上游"]
-        L.append("")
-        L.append(f"**在产业链里的位置:{cp['判断']}**"
-                 f"(相对{up}的增速倍数,{cp['期间']} 从 "
-                 f"{cp['起点']:.2f}x 变到 {cp['终点']:.2f}x)")
-        if not cp.get("可打分", True):
-            L.append("")
-            L.append(f"> ⚠ **这四个可比点不连续,所以这一节只展示,不参与打分。**"
-                     f"它们是 {'/'.join(cp['四点'])},横跨 {cp['跨越季度数']} 个季度"
-                     f"(连续的话应该是 4 个)。中间被跳掉的季度里发生过什么完全看不见,"
-                     f"首尾一比却会得出一个像模像样的趋势。"
-                     f"跳掉的原因有两种:上游同比低于 10%(除以接近 0 的数会让倍数爆掉),"
-                     f"或公司营收同比 ≤0(倍数是负数,没有含义)。"
-                     f"本轮共跳过 {cp['跳过']} 个季度。")
-        L.append("")
-        L.append(f"| 季度 | {up}同比 | 公司营收同比 | 倍数 |")
-        L.append("|---|---:|---:|---:|")
-        for x in cp["points"][-6:]:
-            L.append(f"| {x['period']} | {x['上游同比']:.1f}% "
-                     f"| {x['公司营收同比']:.1f}% | {x['倍数']:.2f}x |")
-        L.append("")
-        kind = (UPSTREAM.get(UPSTREAM_OF.get(f["code"], ""), {}) or {}).get("kind")
-        src = ("上游数据来自各家 10-Q/10-K 的申报原值(SEC XBRL)。" if kind == "sec" else
-               "上游数据来自各家自己的现金流量表(「购建固定资产、无形资产和其他"
-               "长期资产所支付的现金」),和公司营收出自同一套报表。")
-        L.append(f"> {up}是这条链的总量,公司增速相对它的倍数就是分到的份额在怎么变。"
-                 "**这个倍数本身不稳(历史离散度 70% 以上),不能拿来推营收** —— "
-                 "但它的方向是硬信息。" + src)
-    elif f.get("上游说明"):
-        L.append("")
-        L.append(f"**在产业链里的位置:算不了。** {f['上游说明']}")
-        L.append("")
-        L.append("> **「算不了」不等于「这只票没有上游」。** 上面那句话说的是"
-                 "具体卡在哪一步 —— 是还没登记客户群、是数据没抓到、"
-                 "还是数据齐全但可比季度不够。三种要做的事完全不同。")
-
-    L.append("")
-    L.append("**这份预测怎么被推翻**:")
-    for m in f["methods"]:
-        if m.get("ok"):
-            L.append(f"- {m['name']}:{m['失效条件']}")
-    L.append(f"- 任何一条:{f['预测期']} 季报出来后实际值落在区间外 —— "
-             f"那就是这套方法在这只票上不成立,要改的是方法不是解释")
-    return "\n".join(L)
+    """第 3 节的正文。**实现搬到 `forecast_render.py`** —— 这个文件本来快到 800 行,
+    再往里加就成了「算和写混在一起」的大文件。调用方一个字都不用改。"""
+    import forecast_render
+    return forecast_render.render(f)
 
 
 def main() -> int:

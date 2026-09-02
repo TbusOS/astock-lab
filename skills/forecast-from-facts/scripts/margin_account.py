@@ -91,7 +91,9 @@ def sec_now(j, L):
     L.append(f"| 总市值 | {money(mv)} | 五只加总,和界面一致 |")
     L.append(f"| 可用现金 | {money(a['可用现金'], 2)} | 可取现金 {money(a['可取现金'], 2)} |")
     L.append(f"| **总负债** | **{money(debt, 2)}** | 融资本金 + 利息 |")
-    L.append(f"| 净资产(你自己的钱) | {money(equity, 2)} | 总资产 − 总负债 |")
+    L.append(f"| 净资产(你自己的钱) | **{money(equity, 2)}** | **总资产 − 总负债**。"
+             f"这套文档只认这一个算法 —— `account.json` 里那个从券商界面抄下来的"
+             f"净资产改名 `_截图净资产`,只留着和界面两边比对,不进任何计算 |")
     L.append(f"| 维持担保比例 | **{a['维持担保比例_pct']:.2f}%** | 总资产 ÷ 总负债 |")
     L.append(f"| 可用保证金 | **{money(a['可用保证金'], 2)}** | **负数** |")
     L.append(f"| 总仓位 | {a['总仓位_pct']:.2f}% | 几乎满仓 |")
@@ -171,7 +173,153 @@ def sec_three_numbers(j, L):
     L.append("")
 
 
-def sec_distance(j, L):
+def max_drawdown_1y(raw, code: str):
+    """近一年(约 250 个交易日)的最大回撤 —— 从区间内任一高点到其后最低点的跌幅。
+
+    为什么用它代替 bear:bear 是这套方法算出来的最坏那一档;算不出 bear 的票
+    (行业弱匹配、没定尺)如果按「不跌」进最坏情况表,那张表就系统性偏乐观。
+    最大回撤不是我们的判断,是**这只票自己真的走过的一段路** ——
+    它不回答「会不会再跌这么多」,只回答「这一年里它跌过多少」。
+
+    它在不适用时会怎样:日线取不到、或不足两根时返回 None,
+    调用方退回「按不跌算」并在表里写明那一格偏乐观 —— 不猜一个数。
+    """
+    import sections_position as sp
+    px = sp.daily(Path(raw), code)
+    if len(px) < 2:
+        return None
+    px = px[-250:] if len(px) >= 250 else px
+    peak, worst = px[0]["close"], 0.0
+    for d in px:
+        peak = max(peak, d["close"])
+        if peak > 0:
+            worst = min(worst, (d["low"] / peak - 1) * 100)
+    return worst if worst < 0 else None
+
+
+def stress_drop(bear_drop, raw, code: str):
+    """这只票在「最坏那一档」里用哪个跌幅 → (跌幅%, 哪来的)。
+
+    ⚠ **没有 bear 的票不能按「不跌」算。** 那样整张最坏情况表就系统性偏乐观,
+    而它恰恰是用来回答「会不会被强平」的 —— **一张偏乐观的最坏情况表比没有更糟**,
+    它给的是一个看着有依据的安心。
+
+    退而求其次用**近一年最大回撤**:它不是这套方法算出来的最坏那一档,
+    但它是**这只票自己真的走过的一段路**,而且和 bear 一样是个可以被指着问的数。
+    连回撤也算不出(日线取不到)时才退回「不跌」,并且那一格要写明它偏乐观。
+    """
+    if bear_drop is not None:
+        return bear_drop, "bear"
+    dd = max_drawdown_1y(raw, code)
+    return (dd, "回撤") if dd is not None else (0.0, "不跌")
+
+
+def sec_bear_all(j, views, raw, mv, cash, debt, equity, lines, L):
+    """**五只同时兑现最坏那一档(bear;没有 bear 的用近一年最大回撤),账户会怎样。**
+
+    为什么必须单独算这一张:前面那张「均匀下跌」问的是「市值一起跌 X% 会怎样」,
+    它和这套方法自己算出来的 bear 情景**没有关系**。而每只的 bear 跌幅是现成的,
+    负债和担保比例也是现成的,两者相乘是三行代码的事,
+    回答的却是这个账户唯一真正致命的问题:**按我们自己最悲观的那一档,
+    会不会被强平。**
+
+    2026-09-02 之前这两半从没接起来:第 3 节写着「离平仓线还有 47.5%,不算近」,
+    而五只 bear 同时兑现算出来的维持担保比例已经在警戒线之下。
+    **同一套方法的两半在最要命的问题上互相矛盾,而且谁都没发现。**
+
+    它在不适用时会怎样:某几只算不出 bear(行业弱匹配 / 三情景算不出来)时,
+    这张表**按「那几只不跌」算**,并在表下写明是哪几只、这么算是偏乐观的 ——
+    不拿一个默认跌幅顶替。
+    """
+    rows, missing = [], []
+    for p in j["positions"]:
+        v = views.get(p["code"])
+        d = (v or {}).get("建议", {}).get("决策") or {}
+        sc = d.get("三情景") or {}
+        drop = ((sc.get("情景") or {}).get("bear", {}).get("涨跌")
+                if sc.get("ok") else None)
+        drop, how = stress_drop(drop, raw, p["code"])
+        if how != "bear":
+            missing.append(f"{p['name']}"
+                           + (f"(用近一年最大回撤 {drop:.1f}% 代替)"
+                              if how == "回撤" else "(连回撤也算不出,只能按不跌算)"))
+        rows.append({"p": p, "跌幅": drop, "怎么来的": how,
+                     "新市值": p["market_value"] * (1 + drop / 100)})
+    new_mv = sum(r["新市值"] for r in rows)
+    chg = (new_mv / mv - 1) * 100
+    new_ta = new_mv + cash
+    new_ratio = ratio_at(new_ta, debt)
+    new_eq = new_ta - debt
+    L.append("### 3.1 五只同时兑现最坏那一档,账户会怎样")
+    L.append("")
+    L.append("上面那张表问的是「市值**均匀**跌多少会到线」。这一张问的是另一个问题:"
+             "**每只都走到它自己最坏的那一档,同时发生,这个账户在哪。**"
+             "两张表算的不是同一件事 —— 前者是一个假设的均匀跌幅,"
+             "后者是这几只票各自的最坏。")
+    L.append("")
+    L.append("「最坏那一档」优先用**这只票自己报告第 11.1 节的 bear 价位**;"
+             "这套方法给不出 bear 的票(行业弱匹配、没定尺),"
+             "退而用**它自己近一年真实走过的最大回撤**。"
+             "**不当它不跌** —— 那样这张表就系统性偏乐观,"
+             "而它恰恰是用来看最坏情况的。")
+    L.append("")
+    L.append("| 股票 | 现市值 | 压力跌幅 | 这个跌幅哪来的 | 兑现后市值 |")
+    L.append("|---|---:|---:|---|---:|")
+    for r in rows:
+        src = {"bear": "第 11.1 节的 bear 情景",
+               "回撤": "**无 bear,用近一年最大回撤代替**",
+               "不跌": "**连回撤也算不出,只能当它不跌**(这一格偏乐观)"}[r["怎么来的"]]
+        L.append(f"| {r['p']['name']}({r['p']['code']}) "
+                 f"| {money(r['p']['market_value'])} "
+                 f"| **{r['跌幅']:+.1f}%** | {src} | {money(r['新市值'])} |")
+    n_dd = sum(1 for r in rows if r["怎么来的"] == "回撤")
+    L.append(f"| **合计** | **{money(mv)}** | **{chg:+.1f}%** "
+             f"| {len(rows) - n_dd} 只用 bear"
+             + (f"、{n_dd} 只用近一年最大回撤" if n_dd else "")
+             + f" | **{money(new_mv)}** |")
+    L.append("")
+    L.append("| | 现在 | 五只同时走到最坏 |")
+    L.append("|---|---:|---:|")
+    L.append(f"| 总市值 | {money(mv)} | {money(new_mv)}({chg:+.1f}%) |")
+    L.append(f"| 总资产 | {money(mv + cash)} | {money(new_ta)} |")
+    L.append(f"| 总负债 | {money(debt)} | {money(debt)}(不变) |")
+    L.append(f"| **维持担保比例** | {ratio_at(mv + cash, debt):.1f}% "
+             f"| **{new_ratio:.1f}%** |")
+    L.append(f"| **净资产** | {money(equity)} "
+             f"| **{money(new_eq)}**({(new_eq / equity - 1) * 100:+.1f}%) |")
+    L.append("")
+    warn, liq = lines["警戒线_pct"], lines["平仓线_pct"]
+    if new_ratio < liq:
+        verdict = (f"# → **跌破平仓线({liq}%)。** 这不是「离得远」,"
+                   f"是这套方法自己的最悲观情景**已经把账户推到强平之下**。")
+    elif new_ratio < warn:
+        verdict = (f"# → **低于警戒线({warn}%),离平仓线({liq}%)只剩 "
+                   f"{new_ratio - liq:.1f} 个百分点。**")
+    else:
+        verdict = f"# → 仍在警戒线({warn}%)之上,还有 {new_ratio - warn:.1f} 个百分点。"
+    L.append(verdict)
+    L.append("")
+    L.append(f"**这一条比第 5.5 节的单票上限更硬。** 单票上限管的是「一只票最坏时"
+             f"亏掉净资产的百分之几」,它对每只**分别**算;"
+             f"而这里问的是**五只一起最坏**会怎样 —— 全账户层面没有任何一条规则管这件事。"
+             f"五只的上限之和可以远超 100% 净资产,而它们的 bear 又高度相关"
+             f"(三只光模块是同一条链的同一个赌注)。")
+    L.append("")
+    if missing:
+        L.append(f"⚠ **{'、'.join(missing)}** —— 这几只这套方法给不出 bear"
+                 f"(原因见各自报告第 11 节,多半是行业弱匹配、尺不敢用),"
+                 f"所以上表拿**它自己近一年真实走过的最大回撤**当压力跌幅。"
+                 f"这不是这套方法算出来的最坏那一档,但它至少是**这只票自己发生过的跌幅**;"
+                 f"当它不跌会让整张表系统性偏乐观,而这张表恰恰是用来看最坏情况的。")
+        L.append("")
+    L.append("> ⚠ bear 情景**不是最坏情况的上限**。中际旭创从 2026-06-22 的高点到现在"
+             "已经跌了三成以上,幅度和 bear 差不多 —— "
+             "**过去两个多月里已经真实发生过接近 bear 的跌幅**。"
+             "拿一个刚刚被历史摸到过的数当「最坏」,倒推出来的仓位上限是偏松的。")
+    L.append("")
+
+
+def sec_distance(j, views, raw, L):
     a, ps, md = j["account"], j["positions"], j["margin_debt"]
     mv = sum(p["market_value"] for p in ps)
     cash = a["可用现金"]
@@ -199,8 +347,10 @@ def sec_distance(j, L):
                  f"| {money(equity + (tmv - mv))} |")
     L.append("")
     d130 = drop_to_line(mv, cash, debt, lines["平仓线_pct"])
-    L.append(f"**现在离平仓线还有 {abs(d130):.1f}% 的跌幅**,不算近。"
-             "但有三件事会让这个距离缩短,而且是单向的:")
+    L.append(f"**按「五只均匀下跌」算,现在离平仓线还有 {abs(d130):.1f}% 的跌幅。**"
+             "⚠ 这个数说的是「市值一起跌这么多」,**不是**这套方法自己算出来的"
+             "最悲观情景 —— 后者在下面 3.1。两张表回答的不是同一个问题。"
+             "另有三件事会让这个距离缩短,而且是单向的:")
     L.append("")
     L.append("1. **利息每天累积**,负债只增不减(不还的话)。负债涨,线就往上抬。")
     L.append("2. **集中度**:两只光模块占七成,它们一起跌 20% 就等于总市值跌 14%。"
@@ -213,6 +363,8 @@ def sec_distance(j, L):
              f"{lines['平仓线_pct']}%)—— **你的合同上是多少,自己去核**,"
              f"券商之间不一样,这一条我没法替你确认。")
     L.append("")
+    equity = a["总资产"] - debt
+    sec_bear_all(j, views, raw, mv, cash, debt, equity, lines, L)
 
 
 def sec_cost(j, L):
@@ -306,7 +458,7 @@ def sec_each(j, views, L):
     L.append("")
     L.append("**动作由期望值决定** —— 期望值 = 三个情景的价位按概率加权后的涨跌。"
              "≤−20% 清仓 · −20~−8% 减仓 · −8~+8% 持有不加仓 · +8~+20% 持有 · "
-             ">+20% 且确信度 ≥2 可加仓。确信度和仓位上限只管**拿多少**,不管拿不拿。")
+             ">+20% 且确信度比例 ≥ 2/3 可加仓(比例 = 得分 ÷ 本行业可得分)。确信度和仓位上限只管**拿多少**,不管拿不拿。")
     L.append("")
     L.append("提到的「三个方法」是:**存货法**(上季末存货 × 历史比值,看供给侧已花的钱)、**同比法**(去年同期 × 近三季同比,看需求侧增长)、"
              "**环比法**(上季 × 历年同一转换的环比,看季节形状)。每个先自检适不适用,不适用就退出 —— 详细算式见各只报告第 3 节。")
@@ -340,7 +492,7 @@ def sec_each(j, views, L):
         d = a.get("决策") or {}
         L.append(f"- **建议:{a['动作']}**"
                  + (f"(期望值 **{d['EV']:+.1f}%**、确信度 "
-                    f"{d['确信度']['分']}/3、{a['期限']})"
+                    f"{d['确信度']['分']}/{d['确信度']['满分']}、{a['期限']})"
                     if d.get("ok") else f"({a['期限']})")
                  + f" —— 完整推导(三情景 / 概率四步 / 仓位上限)见 "
                    f"{p['name']} 那份报告的第 11 节")
@@ -424,7 +576,7 @@ def sec_triggers(j, views, L):
     L.append("")
 
 
-def sec_disclaim(j, L):
+def sec_disclaim(j, raw, L):
     L.append("## 9 这份文档不做的事,以及数据从哪来")
     L.append("")
     L.append("**不做的事**:")
@@ -462,7 +614,8 @@ def sec_disclaim(j, L):
     L.append("**那些判断背后的数据源**(完整目录在各只报告的第 11 节):")
     L.append("")
     L.append(catalog.markdown(["行情", "公司报表", "海外·事实", "人工投喂"],
-                              None, heading=None).lstrip("\n"))
+                              None, heading=None,
+                              root=raw.parent.parent).lstrip("\n"))
     L.append("重跑:")
     L.append("")
     L.append("```bash")
@@ -489,7 +642,7 @@ def build(fp: Path, raw: Path) -> str:
     L.append("")
     sec_now(j, L)
     sec_three_numbers(j, L)
-    sec_distance(j, L)
+    sec_distance(j, views, raw, L)
     sec_cost(j, L)
     sec_each(j, views, L)
     # 5.5 / 6 / 7 三节住在 account_plan.py —— 那三节算的是「该怎么动」,
@@ -499,7 +652,7 @@ def build(fp: Path, raw: Path) -> str:
     account_plan.sec_options(j, views, L)
     account_plan.sec_plan(j, views, L)
     sec_triggers(j, views, L)
-    sec_disclaim(j, L)
+    sec_disclaim(j, raw, L)
     return "\n".join(L) + "\n"
 
 
