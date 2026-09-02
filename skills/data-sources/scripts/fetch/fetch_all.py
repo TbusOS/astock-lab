@@ -18,6 +18,7 @@
     ├── surveys/       <code>/<date>.json    机构调研  ← 领先
     ├── announcements/ <code>/<date>.json    公告      ← 领先
     ├── chips/         <code>/<date>.json    股东户数 / 融资 / 解禁 / 龙虎榜
+    ├── sectors/       <code>/<date>.json    所属板块 + 判出来的行业(判断只读这份缓存)
     ├── overseas/      <ticker>/<date>.json  海外上下游:目标价/预估/评级变动
     ├── macro/         <date>.json           油价 / 钻机数 / 汇率 / 中美国债
     └── meta/          <date>.json           本次抓取的健康汇总
@@ -60,7 +61,7 @@ socket.setdefaulttimeout(45)
 TODAY = date.today().isoformat()
 RUN_START = datetime.now().isoformat(timespec="seconds")   # 区分本轮与同日更早的残留
 
-# ── 海外上下游:按赛道分组 ────────────────────────────────────────────
+# ── 海外上下游:按行业分组 ────────────────────────────────────────────
 # 这不是「参考」,是领先指标。改这张表 = 改我们的领先指标口径。
 PEERS = {
     "AI算力链-云厂": ["MSFT", "AMZN", "GOOGL", "META"],      # capex 决定光模块需求
@@ -391,6 +392,46 @@ def fetch_chips(code, out):
               env("efinance get_top10_stock_holder_info", ok=False, err=repr(e)))
 
 
+def fetch_sectors(code, out):
+    """这只票挂在哪些板块,以及按板块判出来的行业。
+
+    **为什么取数和判断要分开落盘**:`sectors.classify()` 是纯函数,给它板块列表
+    就一定给出同样的行业;不稳的是**拿板块列表**这一步 —— 它要联网。
+    2026-09-02 实测:同一个函数,库里调正常、命令行直跑五只全判「未定义」,
+    差别只在网络时序。判断如果建在会抖的调用上,报告里的行业就会随机漂,
+    而漂了不报错 —— 未定义行业会让所有依赖行业的指标静默失效。
+
+    所以这里抓一次、落盘,分析步骤只读缓存不联网。抓失败就写 ok=false,
+    下游看到 ok=false 会明说「没抓到」,而不是当成「这只票没有行业」。
+    """
+    socket.setdefaulttimeout(20)          # efinance 内部不带 timeout,会挂死
+    sys.path.insert(0, str(Path(__file__).resolve().parents[3]
+                          / "stock-analysis-workflow" / "scripts"))
+    import sectors as sec
+    try:
+        import efinance as ef
+        boards = [str(x) for x in ef.stock.get_belong_board(code)["板块名称"]]
+    except Exception as e:
+        write(out, "sectors", code, "",
+              env("efinance get_belong_board", ok=False, err=repr(e),
+                  params={"code": code}))
+        return
+    name, spec, matched, others = sec.classify(boards)
+    write(out, "sectors", code, "",
+          env("efinance get_belong_board",
+              url="https://push2.eastmoney.com/api/qt/slist/get",
+              params={"code": code,
+                      "note": "板块列表来自东财;行业由 sectors.classify() 现算,纯函数"},
+              ok=bool(boards),
+              data={"boards": boards,
+                    "行业": name,
+                    "性质": spec.get("nature"),
+                    "命中板块": matched or [],
+                    "次选": [{"行业": n, "分": pts, "命中": hits}
+                             for n, pts, hits in others]}))
+    print(f"    · {code} 板块 {len(boards)} 个 → 行业 {name or '未定义'}")
+
+
 def fetch_overseas_facts(out, only=None):
     """海外上下游的**事实**:季度利润表 + 季度现金流量表(10-Q 转录)。
 
@@ -583,7 +624,8 @@ def fetch_transcripts(out, urls: list[str]):
 GROUPS = {"quotes": fetch_quotes, "research": fetch_research, "financials": fetch_financials,
           "statements": fetch_statements, "forecast": fetch_forecast,
           "consensus": fetch_consensus, "ratings": fetch_ratings, "surveys": fetch_surveys,
-          "announcements": fetch_announcements, "chips": fetch_chips}
+          "announcements": fetch_announcements, "chips": fetch_chips,
+          "sectors": fetch_sectors}
 
 
 def health(out: Path):

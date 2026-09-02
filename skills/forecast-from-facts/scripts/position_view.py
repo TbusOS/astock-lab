@@ -29,15 +29,21 @@ import advice
 import valuation
 
 
-def build(code: str, raw: Path) -> dict:
+def build(code: str, raw: Path, position: dict | None = None) -> dict:
     """跑完整条管线,把账户文档要用的东西都算出来。
 
     和个股报告走的是同一串调用(valuation.build → 里面带 forecast → advice.build),
     所以两份文档不可能给出不同的建议 —— 它们读的是同一次计算的结果。
+
+    ⚠ **`position` 必须传真的那份。** 传 `{}` 的话,`advice.build` 拿不到净资产和
+    「单票最大可承受亏损」,仓位上限整列算不出,**而超限那一条恰恰是执行顺序的
+    第一条规则** —— 结果是账户文档里每只都显示「没超限」,顺序全按期望值排,
+    看着完全正常。2026-09-02 第一次跑账户文档就是这样:个股报告说中际旭创
+    「减仓(减到仓位上限)」,账户文档同一只写「持有,不加仓」,两份文档打架。
     """
     v = valuation.build(code, raw, None)
     f = v["预测"]
-    a = advice.build(v, f, {})
+    a = advice.build(v, f, position or {})
     band, spot, our = v["前瞻PE带"], v["现价"], v["我们预测的未来四季净利"]
     pe = None
     if spot and our and our.get("mid"):
@@ -124,13 +130,6 @@ def detail(view: dict) -> list[str]:
     return out
 
 
-def order_key(view: dict, has_debt: bool, pnl_pct: float):
-    """执行顺序的排序键。**依据两条,都不是「哪只亏得多」**:
-      ① 建议是减仓/清仓的先动 —— 卖出的理由必须是判断变了,不是账面亏了多少
-      ② 同为减仓时,**没有融资负债的先卖** —— 卖有负债的那只,拿回的钱要先还
-         它自己的债,能腾出的现金反而少;卖没负债的,全额都能拿去还债
-    """
-    act = view["建议"]["动作"]
-    return (0 if act.startswith(("清仓", "减仓")) else 1,
-            0 if not has_debt else 1,
-            -pnl_pct)
+# ⚠ `order_key` 2026-09-02 删掉了。执行顺序的规则搬到 `account_plan.py`,
+#   因为新规则的第一条是「先动超过仓位上限的」——那要看账户级的净资产和
+#   可承受亏损参数,这个模块拿不到(它只负责措辞)。规则留在拿得到数据的地方。

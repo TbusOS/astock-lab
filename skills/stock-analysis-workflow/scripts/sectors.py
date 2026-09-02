@@ -1,9 +1,9 @@
 #!/usr/bin/env python3
-"""sectors —— 赛道分派:不同赛道的领先指标、数据源、判据都不一样。
+"""sectors —— 行业分派:不同行业的领先指标、数据源、判据都不一样。
 
 用法:
-    python3 sectors.py                 # 看全部赛道
-    python3 sectors.py 002353          # 按代码判它属于哪个赛道并给出该用什么
+    python3 sectors.py                 # 看全部行业
+    python3 sectors.py 002353          # 按代码判它属于哪个行业并给出该用什么
     python3 sectors.py --md s.md
 
 为什么必须有这一层(2026-08-28 被四只票同时打脸):
@@ -19,7 +19,7 @@
     周期股看的是**周期位置**;成长股 PEG 有意义,周期股 PEG 在盈利低谷时
     会给出「便宜」的假信号(分母小),在盈利高峰时给出「贵」的假信号。
 
-    所以分析一只票之前,**先问它属于哪个赛道**,再决定:
+    所以分析一只票之前,**先问它属于哪个行业**,再决定:
     ① 领先指标是什么  ② 从哪取  ③ 判据模板怎么写  ④ 哪些常用指标在这里失效
 
 ⚠ 这张表是**方法定义**,不是数据。它告诉你该去找什么;
@@ -37,12 +37,12 @@ import argparse
 import sys
 from pathlib import Path
 
-# 赛道定义。字段:
+# 行业定义。字段:
 #   hints        板块关键词(efdata board 的返回里出现就算命中),窄词在前
 #   nature       成长 / 周期 / 稳健 —— 决定用哪套判据
 #   leading      领先指标:(名称, 领先多久, 怎么取, 现状)
 #   peers        海外对照组
-#   invalid      在这个赛道上会给出假信号的常用指标
+#   invalid      在这个行业上会给出假信号的常用指标
 #   criteria     判据模板要点
 SECTORS = {
     "AI算力链": {
@@ -54,7 +54,7 @@ SECTORS = {
         "peer_tickers": [("LITE", "Lumentum"), ("MRVL", "Marvell"),
                          ("COHR", "Coherent"), ("AVGO", "Broadcom"),
                          ("NVDA", "NVIDIA")],
-        # 在这个赛道上会给出**假信号**的报告字段。preport 会按这个在正文里打标,
+        # 在这个行业上会给出**假信号**的报告字段。preport 会按这个在正文里打标,
         # 而不是默默打印一个误导性的数字。key 见 position_report 的 INVALID_MARKS。
         "invalid_keys": [],
         "leading": [
@@ -108,7 +108,7 @@ SECTORS = {
         "invalid": [
             "**PEG** —— 盈利低谷时分母小给「便宜」假信号，高峰时给「贵」假信号",
             "净利同比 —— 周期股的同比在拐点附近毫无预测力",
-            "净利增速的基准率 —— 基准率库是全市场口径，对强周期股不适用",
+            "净利增速的基准率 —— 基准率库按全市场分组算，对强周期股不适用",
         ],
         "criteria": "**看周期位置不看增速**。PB 分位 + 油价位置 + 资本开支周期"
                     "三者交叉。周期股在 PE 最高时往往是盈利低谷（该买），"
@@ -149,18 +149,18 @@ DEFAULT = {
     "nature": "未知",
     "hints": [],
     "peer_tickers": [],
-    # 未定义赛道:**所有依赖赛道假设的指标都不可信**,全部打标。
+    # 未定义行业:**所有依赖行业假设的指标都不可信**,全部打标。
     "invalid_keys": ["peg", "baserate_growth", "pe_percentile", "peers"],
-    "leading": [("❌ 没有为这个赛道定义领先指标", "—", "—", "❌")],
+    "leading": [("❌ 没有为这个行业定义领先指标", "—", "—", "❌")],
     "peers": "❌ 未配",
     "invalid": [],
-    "criteria": "⚠ **这个赛道还没定义方法。**别直接套 AI 算力链那套 —— "
+    "criteria": "⚠ **这个行业还没定义方法。**别直接套 AI 算力链那套 —— "
                 "先问「这条链的需求源头是什么、什么数据领先它 1-2 个季度」，"
                 "然后把答案补进 sectors.py。",
 }
 
 # ── 库接口:给 preport 调 ─────────────────────────────────────────────────────
-# preport 在跑任何一层之前先问这里「这只票是哪个赛道、哪些指标在这里失效」。
+# preport 在跑任何一层之前先问这里「这只票是哪个行业、哪些指标在这里失效」。
 # **不这么做的后果**:2026-08-28 拿油服票跑成长股那套,报告里印出
 # PEG −15.30 而没有任何提示 —— 读者会以为那是个有意义的数。
 
@@ -184,11 +184,11 @@ def boards_of(code):
 
 
 def for_code(code):
-    """一步到位:给代码,返回 (赛道名 or None, spec, 命中板块, 次选列表, 板块原始列表)。
+    """一步到位:给代码,返回 (行业名 or None, spec, 命中板块, 次选列表, 板块原始列表)。
 
     spec 里 preport 会用到的两个字段:
       peer_tickers  海外对照组 —— **第 7 层直接用这个**
-      invalid_keys  在这个赛道上会给假信号的报告字段 —— preport 按它打标
+      invalid_keys  在这个行业上会给假信号的报告字段 —— preport 按它打标
     """
     boards = boards_of(code)
     name, spec, matched, others = classify(boards)
@@ -204,7 +204,7 @@ def say(x=""):
 
 
 def classify(boards):
-    """按板块名判赛道 —— 打分,不是先命中先用。
+    """按板块名判行业 —— 打分,不是先命中先用。
 
     ⚠ 两个坑,2026-08-28 拿杰瑞股份(油服)一次踩全:
 
@@ -238,7 +238,7 @@ def classify(boards):
 
 
 def show(name, spec, matched=None):
-    title = name or "未定义赛道"
+    title = name or "未定义行业"
     say(f"## {title}")
     say()
     m = ""
@@ -254,7 +254,7 @@ def show(name, spec, matched=None):
     say(f"**海外对照组**：{spec['peers']}")
     say()
     if spec["invalid"]:
-        say("**在这个赛道上会给出假信号的指标**（报告里出现要打折看）：")
+        say("**在这个行业上会给出假信号的指标**（报告里出现要打折看）：")
         say()
         for x in spec["invalid"]:
             say(f"- {x}")
@@ -266,14 +266,14 @@ def show(name, spec, matched=None):
 def main():
     p = argparse.ArgumentParser(
         prog="sectors",
-        description="赛道分派:不同赛道的领先指标 / 数据源 / 判据都不一样")
-    p.add_argument("code", nargs="?", help="股票代码;不给就列出全部赛道")
+        description="行业分派:不同行业的领先指标 / 数据源 / 判据都不一样")
+    p.add_argument("code", nargs="?", help="股票代码;不给就列出全部行业")
     p.add_argument("--md", metavar="文件")
     a = p.parse_args()
 
-    say("# 赛道分派")
+    say("# 行业分派")
     say()
-    say("> **同一套判据套所有赛道会出错。**成长股看增速持续性，"
+    say("> **同一套判据套所有行业会出错。**成长股看增速持续性，"
         "周期股看周期位置；成长股 PEG 有意义，周期股 PEG 在盈利低谷给"
         "「便宜」假信号、高峰给「贵」假信号。")
     say()
@@ -301,14 +301,14 @@ def main():
         name, spec, matched, others = classify(boards)
         show(name, spec, matched)
         if others:
-            # ⚠ 一票多赛道很常见(既是油服又挂液冷服务器概念)。把次选也说出来 ——
-            #   主判可能是错的,读者要能一眼看到「它还沾着别的赛道」。
-            say("**这只票还命中了其它赛道**（分数低于主判，但值得知道）：")
+            # ⚠ 一票多行业很常见(既是油服又挂液冷服务器概念)。把次选也说出来 ——
+            #   主判可能是错的,读者要能一眼看到「它还沾着别的行业」。
+            say("**这只票还命中了其它行业**（分数低于主判，但值得知道）：")
             say()
             for n, pts, hits in others:
                 say(f"- **{n}**（{pts} 分）：{' / '.join(f'`{x}`' for x in hits[:4])}")
             say()
-            say("> 多赛道命中时,**主判只是起点**。如果次选赛道才是它真正的主业,"
+            say("> 多行业命中时,**主判只是起点**。如果次选行业才是它真正的主业,"
                 "换用那一套的领先指标与判据 —— 概念板块会把行业判错。")
             say()
         if name is None:
@@ -317,7 +317,7 @@ def main():
             say(">")
             say("> 1. 这条链的**需求源头**是什么？（谁掏钱买它的产品）")
             say("> 2. 什么数据**领先那个需求 1-2 个季度**？从哪取？")
-            say("> 3. 哪些常用指标在这个赛道上会**给出假信号**？")
+            say("> 3. 哪些常用指标在这个行业上会**给出假信号**？")
             say()
     else:
         for name, spec in SECTORS.items():

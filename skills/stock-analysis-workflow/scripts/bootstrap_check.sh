@@ -73,7 +73,7 @@ hr
 echo "== 2. venv 与依赖 =="
 if [ -x "$PY" ]; then
   ok "venv $VENV ($($PY -V 2>&1))"
-  for m in akshare baostock pandas requests; do
+  for m in akshare baostock pandas pyarrow requests; do
     if $PY -c "import $m" 2>/dev/null; then ok "  $m"; else bad "  缺 $m"; fi
   done
   # ⚠ edgartools 的 import 名是 edgar,不是 edgartools(实测踩过)

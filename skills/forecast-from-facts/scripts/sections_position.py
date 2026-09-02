@@ -86,6 +86,17 @@ def load_position(fp: Path | None, code: str) -> dict:
                          "可用现金": acct.get("可用现金"),
                          "总负债": acct.get("总负债"),
                          "维持担保比例": acct.get("维持担保比例_pct"),
+                         # ⚠ **仓位上限的分母是净资产,不是总市值。**
+                         #   总市值里有借来的钱:这个账户总市值 150 万、净资产 90 万,
+                         #   按总市值算「占 32%」听着还好,按自己的钱算是 54%。
+                         #   风险要按自己的钱衡量 —— 亏的是自己的钱,不是券商的。
+                         "净资产": acct.get("净资产"),
+                         "总市值": acct.get("总市值"),
+                         "总资产": acct.get("总资产"),
+                         "单票最大可承受亏损_pct": j.get(
+                             "_单票最大可承受亏损_pct_of_净资产"),
+                         "行业最大可承受亏损_pct": j.get(
+                             "_行业最大可承受亏损_pct_of_净资产"),
                          "账户类型": j.get("_账户类型")}}
     # holdings.json
     h = (j.get("holdings") or {}).get(code) or {}
@@ -372,7 +383,7 @@ def sec_peers(raw: Path, group: str | None, n: int, L) -> None:
 
 
 # ── 操作判断 ──────────────────────────────────────────────────────────
-def sec_action(v, f, d, cost, spot, pick_mult, n: int, L) -> None:
+def sec_action(v, f, d, cost, spot, pick_mult, n: int, L, dec=None) -> None:
     """继续持有的前提 / 减仓信号 / 补仓参考。
 
     **每一条都必须是这只票自己算出来的数字,不是通用规则。**
@@ -380,7 +391,7 @@ def sec_action(v, f, d, cost, spot, pick_mult, n: int, L) -> None:
     写不出数字的条目就不要写 —— 那说明我们其实没有依据。
     """
     qs = d["quarters"]
-    L.append(f"## {n} 操作判断")
+    L.append(f"## {n} 判断依据与复核")
     L.append("")
     L.append("**下面是从前面几节的数字机械推出来的条件,不是投资建议。"
              "最终决策和后果都是你的。**")
@@ -441,22 +452,35 @@ def sec_action(v, f, d, cost, spot, pick_mult, n: int, L) -> None:
 
     L.append("### 关于补仓")
     L.append("")
+    sc = ((dec or {}).get("三情景") or {})
     if cost is None:
         L.append("没有成本数据,这一段给不出参考。补进 "
-                 "`private/portfolio/holdings.json` 之后会有。")
-    elif pick_mult and pick_mult.get("ok") and our and v.get("总股本"):
-        low_tp = our["low"] * pick_mult["低"] / v["总股本"]
-        L.append(f"- 我们**最谨慎那一档**的目标价是 **{low_tp:,.0f} 元**"
-                 f"(净利下沿 × 倍数下沿)。现价 {spot['close']:,.2f} "
-                 + ("**已经低于它**,从估值角度是有安全边际的"
-                    if spot["close"] < low_tp else
-                    f"比它高 {(spot['close'] / low_tp - 1) * 100:.0f}%,"
-                    f"现在补仓等于赌乐观档兑现"))
+                 "`private/portfolio/account.json` 之后会有。")
+    elif sc.get("ok") and spot:
+        # ⚠ **参考价位一律用第 11.1 节那三个价,不另算一套。**
+        #   2026-09-02 之前这里用 `valuation.pick_multiple()` 另算一个「最谨慎目标价」,
+        #   算法和三情景不一样(它按增长挑倍数档,三情景固定用 p25/p50/p75)——
+        #   同一份报告里出现两个「最谨慎价」,读者只能挑一个信,而两个都看着合理。
+        #   中际旭创实测:这边 760 元、第 11.1 节 bear 568 元,差 34%。
+        b, ba = sc["情景"]["bear"], sc["情景"]["base"]
+        L.append(f"- 参考价位就是第 11.1 节那三个:**bear {b['价']:,.2f} 元**"
+                 f"({b['涨跌']:+.1f}%)、**base {ba['价']:,.2f} 元**"
+                 f"({ba['涨跌']:+.1f}%)。现价 {spot['close']:,.2f} "
+                 + ("**在 base 之下**,还有安全边际。" if spot["close"] < ba["价"]
+                    else "**已经在 base 之上** —— 在这个位置补仓是在赌 bull 兑现。"))
+        L.append("- **这一节不另算一套目标价。** 以前这里用一个「按增长挑倍数档」的"
+                 "算法单独出一个最谨慎价,和第 11.1 节的 bear 不是同一种算法 —— "
+                 "同一份报告里两个「最谨慎价」,读者只能挑一个信,而两个都看着合理。")
         L.append(f"- 你的成本 {cost:,.3f}。在当前价补仓,"
                  f"平均成本会被拉到 {(cost + spot['close']) / 2:,.2f}(等额补一次)")
         L.append("- **先看第 7 节「你的成本在历史里的位置」。** 如果成本落在高位窄带,"
                  "在当前价补仓会把平均成本拖到一个更难受的地方;"
                  "更该等的是前一个明确低点附近,而且分批不要一次打满")
+        L.append("- ⚠ **能不能补,先看第 11.5 节的仓位上限。** 上限是账户层面的硬约束,"
+                 "它比「现价便不便宜」更靠前:超限的时候,再便宜也是先减不是补。")
+    else:
+        L.append("三情景这次算不出来(见第 11 节),所以给不出参考价位。"
+                 "**不拿别的算法凑一个** —— 两套算法出两个价,读者只能挑一个信。")
     L.append("")
     L.append("> 这一节的每个数字都能在前面几节找到出处。"
              "**它不预测股价** —— 它只把「什么情况下我们的判断就错了」写成可以核对的条件。")

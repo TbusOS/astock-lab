@@ -515,6 +515,9 @@ def build(code: str, raw: Path, target: str | None) -> dict:
             "产业链位置": cp,
             "上游说明": up_note,
             "利润率": mg, "归母净利区间": profit,
+            # PB 路径要用它算「这一年净资产会长多少」—— 那条路径假设净资产不变,
+            # 这个数就是那个假设漏掉了多少。
+            "最近归母净资产": qs[-1].get("期末归母净资产"),
             "生成日": date.today().isoformat(),
             "来源": d["来源"]}
 

@@ -117,6 +117,100 @@ def daily(raw: Path, code: str):
     return []
 
 
+def daily_pb(raw: Path, code: str):
+    """前复权日线里的 `pbMRQ` → [(date, pb)]。
+
+    **为什么周期股和设备股要用 PB 不用 PE**:PE 的分母是利润,而周期股在盈利
+    低谷时利润接近 0 —— 除以一个很小的数,PE 会飙到几百倍,看着「很贵」,
+    实际上那正是周期底部该买的位置;盈利高峰时反过来给出「便宜」的假信号。
+    PB 的分母是净资产,它不随景气一年翻几倍,所以在周期股上是**稳定的尺**。
+
+    ⚠ **它不适用于轻资产公司**:净资产里没有品牌、没有研发积累时,PB 衡量的
+    只是账面家当。所以这把尺只挂给「有产能、有存货、靠资本开支赚钱」的行业
+    (油气设服 / 半导体设备),不往光模块和消费股上套。
+    """
+    for env in envs(newest(raw, f"quotes/{code}/*-qfq.json")).values():
+        if env.get("ok") and env.get("data"):
+            out = []
+            for row in env["data"]:
+                r = dict(zip(K_FIELDS, row))
+                try:
+                    pb = float(r["pbMRQ"])
+                except (TypeError, ValueError):
+                    continue
+                if pb > 0:
+                    out.append((r["date"], pb))
+            return sorted(out)
+    return []
+
+
+def pb_band(raw: Path, code: str) -> dict:
+    """PB 的全历史分位。**这里没有任何预测** —— 每天的 PB 都是当天的事实。
+
+    和 3+1 PE 带的区别:PE 带要拼「三季实际 + 一季」的分母,最近一季算不出来;
+    PB 的分母是最近一期的净资产,券商每天算好挂在日线上,**一天都不丢**。
+    """
+    pts = daily_pb(raw, code)
+    if len(pts) < 250:
+        return {"ok": False, "why": f"带 pbMRQ 的交易日只有 {len(pts)} 天(要 250 天以上),"
+                                    f"算不出有意义的分位"}
+    v = sorted(x[1] for x in pts)
+
+    def q(x):
+        return v[min(len(v) - 1, int(len(v) * x))]
+
+    cur = pts[-1][1]
+    rank = sum(1 for x in v if x <= cur) / len(v) * 100
+    return {"ok": True, "n": len(v), "从": pts[0][0], "到": pts[-1][0],
+            "现值": cur, "现值分位": rank,
+            "p10": q(.10), "p25": q(.25), "p50": q(.50), "p75": q(.75), "p90": q(.90),
+            "均值": statistics.mean(v), "最低": v[0], "最高": v[-1]}
+
+
+def forward_ps_band(raw: Path, code: str, share: float, since="2019") -> dict:
+    """3+1 PS 带 —— 和 3+1 PE 带**同一套算法**,只把分母从归母净利换成营业总收入。
+
+    **为什么设备股要看 PS**:半导体设备和面板设备是项目制,一台机器从下单到确认
+    收入要好几个季度,利润在这中间会因为一次性的验收、减值、股权激励费用摆来摆去。
+    营收比利润稳,而且它更贴近「这门生意做了多大」。
+
+    ⚠ **PS 不管赚不赚钱**:两家营收一样、一家净利率 20% 一家 2%,PS 完全相同。
+    所以它只在「利润这把尺已经因为低基数失效」的时候顶上,不单独用来下结论 ——
+    要和 PB 一起看。
+    """
+    qs = quarterly.build(raw, code, since=since)["quarters"]
+    rv = [(p["period"], p["报告日"], p["单季营收"]) for p in qs
+          if p.get("单季营收") is not None]
+    if len(rv) < 8:
+        return {"ok": False, "why": f"单季营收只有 {len(rv)} 期,算不出 3+1 PS 带(至少要 8 期)"}
+    fwd = {}
+    for i in range(2, len(rv) - 1):
+        fwd[rv[i][1]] = sum(x[2] for x in rv[i - 2:i + 2])
+    all_ends = sorted(x[1] for x in rv)
+    pts, dropped = [], 0
+    for d, close in daily(raw, code):
+        key = d.replace("-", "")
+        cur = None
+        for e in all_ends:
+            if key >= e:
+                cur = e
+        if cur is None or cur not in fwd or not fwd[cur] or fwd[cur] <= 0:
+            dropped += 1
+            continue
+        pts.append({"date": d, "ps": close * share / fwd[cur]})
+    if len(pts) < 60:
+        return {"ok": False, "why": f"能算出 3+1 PS 的交易日只有 {len(pts)} 天,样本不够"}
+    v = sorted(p["ps"] for p in pts)
+
+    def q(x):
+        return v[min(len(v) - 1, int(len(v) * x))]
+
+    return {"ok": True, "n": len(v), "从": pts[0]["date"], "到": pts[-1]["date"],
+            "p10": q(.10), "p25": q(.25), "p50": q(.50), "p75": q(.75), "p90": q(.90),
+            "均值": statistics.mean(v), "最低": v[0], "最高": v[-1],
+            "算不了的交易日": dropped}
+
+
 def total_share(raw: Path, code: str):
     for env in envs(newest(raw, f"financials/{code}/*[0-9].json")).values():
         if "query_profit_data" in env.get("source", "") and env.get("data"):
@@ -211,13 +305,42 @@ def build(code: str, raw: Path, target: str | None = None) -> dict:
         our_fwd = {"low": base + p["low"], "mid": base + p["mid"], "high": base + p["high"],
                    "说明": f"已披露最近三季实际({'、'.join(r['period'] for r in qs[-3:])})"
                            f" + 我们预测的 {f['预测期']}"}
+    # 3+1 营收:和 3+1 净利同一段时间,给 PS 带的现价那一格用
+    hrev = [r["单季营收"] for r in qs if r.get("单季营收") is not None]
+    rb = f.get("营收区间")
+    our_rev = None
+    if rb and len(hrev) >= 3:
+        base_r = sum(hrev[-3:])
+        our_rev = {"low": base_r + rb["low"], "mid": base_r + rb["mid"],
+                   "high": base_r + rb["high"]}
     return {"code": code, "总股本": share, "股本截止日": share_date,
+            # ⚠ **把 raw 一起带出去。** 下游的行业 / 领先层 / 基准率都要读盘,
+            #   而它们只拿得到这个 dict。不带的话,调用方要么各自再传一遍 raw
+            #   (五个调用点,漏一个就静默用默认路径),要么去猜工作台在哪。
+            "raw": str(raw),
             "现价": spot, "前瞻PE带": band, "预测": f,
+            # 另外两把尺。**不是每只都用** —— 用哪把由行业决定,见 sector_rules.py。
+            # 这里一律算出来,是因为「算出来但标明不进决策」和「没算」是两件事:
+            # 前者读者能看到那把尺长什么样,后者只能猜。
+            "PS带": forward_ps_band(raw, code, share),
+            "PB带": pb_band(raw, code),
+            "我们预测的未来四季营收": our_rev,
             "我们预测的未来四季净利": our_fwd, "生成日": date.today().isoformat()}
 
 
 def pick_multiple(band: dict, growth_pct: float | None) -> dict:
-    """选一个 3+1 PE。**理由必须写出来**,不能是拍的。
+    """⚠ **2026-09-02 退役,报告里已经没有调用点。** 留着是为了留住这段教训。
+
+    它按「我们预测的增长」挑倍数档(≥60% 取带的上半段,25%~60% 取中段,
+    <25% 取下半段)。**这个做法把对增长的看法算了两遍** —— 增长已经进了
+    第 11.2 节的概率(领先层那一步),再拿它挑倍数就是同一件事算两次,
+    而两次都看着合理。和 2026-09-01 那次「TTM PE 分位乘前瞻利润」是同一类错。
+
+    现在三情景固定用带的 p25 / p50 / p75,对增长的看法**只进概率**。
+
+    下面是它原来的说明,保留:
+
+    选一个 3+1 PE。**理由必须写出来**,不能是拍的。
 
     第一性原理:PE 跟增长走。所以拿我们预测的增长和这只票历史增长比 ——
     快就往带的上沿靠,慢就往下沿靠。用的是这只票**自己**的历史带,

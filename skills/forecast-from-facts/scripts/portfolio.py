@@ -44,7 +44,7 @@ def yi(v, nd=1):
     return "—" if v is None else f"{v / 1e8:,.{nd}f}"
 
 
-def one(code: str, name: str, raw: Path):
+def one(code: str, name: str, raw: Path, position: dict | None = None):
     v = valuation.build(code, raw, None)
     f = v["预测"]
     d = quarterly.build(raw, code, since="2023")
@@ -59,20 +59,30 @@ def one(code: str, name: str, raw: Path):
     prev4 = sum(hist[-7:-3]) if len(hist) >= 7 else None
     return {
         "code": code, "name": name, "价": spot["close"], "日": spot["date"],
-        "市值": cap, "预测净利": our, "前瞻PE": pe, "带": b,
+        "市值": cap, "预测净利": our, "pe31": pe, "带": b,
         "相对自己历史": pe / p50 if pe and p50 else None,
         "净利同比": (our["mid"] / prev4 - 1) * 100 if prev4 else None,
         "方法数": f["可用方法数"], "预测期": f["预测期"],
         "产业链": f.get("产业链位置"), "上游说明": f.get("上游说明"),
         "预测原文": f,
-        "建议": advice.build(v, f, {}),
+        "建议": advice.build(v, f, position or {}),
+        "持仓": position or {},
         "单季": d["quarters"],
     }
 
 
-def build(pairs, raw: Path) -> str:
-    rows = [r for r in (one(c, n, raw) for c, n in pairs) if r]
-    rows.sort(key=lambda r: -(r["相对自己历史"] or 0))
+def build(pairs, raw: Path, holdings: Path | None = None) -> str:
+    import sections_position as sp
+    rows = [r for r in (one(c, n, raw, sp.load_position(holdings, c))
+                        for c, n in pairs) if r]
+    # ⚠ **按期望值从差到好排,不再按「相对自己历史贵多少」。**
+    #   贵不贵只是三个情景之一的输入;期望值把贵贱、增长、领先信号和概率
+    #   全折算成同一个数,才是「该先动哪只」的依据。
+    #   算不出期望值的排最后 —— 那是「不知道」,不是「不好不坏」。
+    def ev_key(r):
+        ev = (r["建议"].get("决策") or {}).get("EV")
+        return (1, 0.0) if ev is None else (0, ev)
+    rows.sort(key=ev_key)
 
     L = ["# 五只持仓 · 并排对照", ""]
     L.append(f"生成于 {date.today().isoformat()} · 收盘价截至 "
@@ -82,23 +92,110 @@ def build(pairs, raw: Path) -> str:
              "**不引用任何机构的盈利预测**。每只票的完整推导见各自那份报告。")
     L.append("")
 
-    L.append("## 1 五只的建议一览")
+    L.append("## 1 五只并排:行业 · 三情景 · 概率 · 期望值 · 仓位上限 · 动作")
     L.append("")
-    L.append("| 代码 | 名称 | **建议** | 期限 | 估值 | 基本面 | 确定性 | 合计 |")
-    L.append("|---|---|---|---|---:|---:|---:|---:|")
-    for r in sorted(rows, key=lambda x: x["建议"]["总分"], reverse=True):
-        a = r["建议"]
-        L.append(f"| {r['code']} | {r['name']} | **{a['动作']}** | {a['期限']} "
-                 f"| {a['估值'][0]:+d} | {a['基本面'][0]:+d} | {a['确定性'][0]:+d} "
-                 f"| **{a['总分']:+d}** |")
+    L.append("**按期望值从差到好排** —— 期望值把贵贱、增长、领先信号和概率"
+             "全折算成同一个数,所以它才是「该先动哪只」的依据。"
+             "「相对自己历史贵多少」只是其中一个输入,单看它会漏掉另外三样。")
     L.append("")
-    L.append("**三个维度是**:估值(现价 3+1 PE ÷ 自己历史 p50)、"
-             "基本面(相对上游开支的增速倍数,水平 + 趋势)、"
-             "确定性(三个预测方法里有几个适用)。"
-             "**规则写死在代码里,五只用同一把尺** —— "
-             "「你凭什么给估值 −2 分」是个能回答的问题。"
-             "档位:≥3 买入 · 1~2 持有 · 0 持有不加仓 · −1~−2 减仓 · ≤−3 清仓。"
-             "每只的完整依据和「具体怎么做」在各自那份报告的第 11 节。")
+    L.append("| 股票 | 行业 | bear | base | bull | 概率 "
+             "| **期望值** | 确信度 | 上限 vs 现仓 | **动作** |")
+    L.append("|---|---|---:|---:|---:|---|---:|---|---|---|")
+    for r in rows:
+        a_ = r["建议"]
+        d = a_.get("决策") or {}
+        if not d.get("ok"):
+            L.append(f"| {r['name']} {r['code']} | {a_.get('行业') or '—'} "
+                     f"| — | — | — | — | — | — | — | **{a_['动作']}** |")
+            continue
+        sc, pr = d["三情景"]["情景"], d["概率"]["probs"]
+        pc = d["仓位上限"]
+        cap_txt = "算不出"
+        if pc.get("ok"):
+            cap_txt = (f"{pc['上限pct']:.1f}% vs "
+                       + (f"**{pc['现仓位pct']:.1f}%**"
+                          if pc.get("现仓位pct") is not None else "—"))
+            if d.get("超限"):
+                cap_txt += " ⚠超"
+        L.append(f"| {r['name']} {r['code']} | {a_.get('行业') or '—'} "
+                 f"| {sc['bear']['价']:,.0f}({sc['bear']['涨跌']:+.0f}%) "
+                 f"| {sc['base']['价']:,.0f}({sc['base']['涨跌']:+.0f}%) "
+                 f"| {sc['bull']['价']:,.0f}({sc['bull']['涨跌']:+.0f}%) "
+                 f"| {pr['bear'] * 100:.0f}/{pr['base'] * 100:.0f}/{pr['bull'] * 100:.0f} "
+                 f"| **{d['EV']:+.1f}%** | {d['确信度']['分']}/3 {d['确信度']['档']} "
+                 f"| {cap_txt} | **{a_['动作']}** |")
+    L.append("")
+    L.append(f"**五只的复核日都是 {rows[0]['建议']['决策'].get('复核日', '—')}** —— "
+             f"那是三季报的法定披露截止日。那天回来拿实际值对各自报告第 3 节的区间、"
+             f"第 10 节的条件、第 11.1 的三个价位,逐条核。")
+    L.append("")
+    L.append("**「概率」那一列是 bear/base/bull 三个数**,四步算出来的:"
+             "起点 25/50/25 → 领先层(每个 ↑ 把 5 个百分点从 bear 挪到 bull,"
+             "最多挪 15)→ 方法层(只剩一个方法或方法互相矛盾时,base 往两边各拨 5)"
+             "→ 基准率封顶(bull ≤ 历史上同类公司 4 季后仍 ≥50% 的比例)。"
+             "**每只的四步中间值在各自报告的第 11.2 节整张印出来。**")
+    L.append("")
+    L.append("**动作只由期望值决定**:≤−20% 清仓 · −20~−8% 减仓 · "
+             "−8~+8% 持有不加仓 · +8~+20% 持有 · >+20% 且确信度 ≥2 可加仓。"
+             "**但超过仓位上限的,不论期望值先减到上限** —— "
+             "上限从 bear 情景倒推,期望为正不代表你扛得住最坏那一档。")
+    L.append("")
+    L.append("**三情景的倍数按行业分两条路**:成长行业(AI算力链)用 3+1 PE 带的 "
+             "p25/p50/p75 乘我们预测的 3+1 净利下沿/中枢/上沿;"
+             "周期与设备行业(油气设服 / 半导体设备)用 PB —— "
+             "bear = PB 回到自身历史 p50、base = PB 不变、bull = PB 到 p75,"
+             "价位 = 现价 × 目标 PB ÷ 现 PB。"
+             "**周期股不能看 PE**:盈利低谷时利润接近 0,PE 飙到几百倍看着「很贵」,"
+             "而那正是该买的位置;高峰反过来。两次都是反的,数字却完全正常。")
+    L.append("")
+    inverted = [r for r in rows
+                if ((r["建议"].get("决策") or {}).get("三情景") or {}).get("倒挂")]
+    if inverted:
+        L.append("> ⚠ **" + "、".join(r["name"] for r in inverted)
+                 + " 的 bull 价位低于 base。** 它们现在的 PB 已经高于自己历史的 p75,"
+                 "所以按规则「PB 回到 p75」本身就是往下走 —— "
+                 "**这几只现在没有「估值继续扩张」这个乐观情景**,"
+                 "最好的情况是估值停在原地,而那已经是历史极值附近。")
+        L.append("")
+    L.append("### 1.1 同一行业合计的仓位上限")
+    L.append("")
+    L.append("同行业的票会一起跌。三只光模块分开看各自不超限,合起来在 bear 情景下"
+             "能让净资产掉三成 —— **「分散到三只」并没有分散风险,"
+             "只是把同一个赌注写成了三行。**")
+    L.append("")
+    acct0 = next((r["持仓"].get("账户") for r in rows if r["持仓"].get("账户")), None)
+    if acct0:
+        import decision
+        sec = decision.sector_cap(
+            [{"行业": r["建议"].get("行业"),
+              "市值": r["持仓"].get("market_value") or 0,
+              "bear跌幅": (((r["建议"].get("决策") or {}).get("三情景") or {})
+                          .get("情景", {}).get("bear", {}).get("涨跌"))}
+             for r in rows if r["持仓"].get("market_value")], acct0)
+        if sec.get("ok"):
+            L.append("| 行业 | 几只 | 合计市值 | 加权 bear 跌幅 | 合计上限 "
+                     "| 上限金额 | 现在占净资产 | 超出 |")
+            L.append("|---|---:|---:|---:|---:|---:|---:|---:|")
+            for name, x in sorted(sec["按行业"].items(),
+                                  key=lambda kv: -(kv[1].get("市值") or 0)):
+                if x.get("ok"):
+                    L.append(f"| **{name}** | {x['只数']} | {x['市值']:,.0f} "
+                             f"| {x['加权bear跌幅']:+.1f}% | {x['上限pct']:.1f}% "
+                             f"| {x['上限金额']:,.0f} | **{x['现仓位pct']:.1f}%** | "
+                             + (f"**{x['超出金额']:,.0f}**" if x["超出金额"] > 0 else "—")
+                             + " |")
+                else:
+                    L.append(f"| {name} | — | {x.get('市值', 0):,.0f} | — | 算不出 "
+                             f"| — | — | {x.get('why', '')} |")
+            L.append("")
+            L.append(f"合计上限 = 净资产的 {sec['可承受亏损pct']}% ÷ "
+                     f"|该行业市值加权 bear 跌幅|。"
+                     f"那个 {sec['可承受亏损pct']}% 是 `account.json` 里的显式参数,"
+                     f"**你可以改,改了要在同一个文件里写理由**。")
+        else:
+            L.append(f"算不出来:{sec.get('why')}")
+    else:
+        L.append("没有账户数据(没给 `--holdings`),这一节算不了。")
     L.append("")
     L.append("## 2 按「相对自己历史贵多少」排序")
     L.append("")
@@ -119,7 +216,7 @@ def build(pairs, raw: Path) -> str:
         rel = r["相对自己历史"]
         L.append(f"| {i} | {r['code']} | {r['name']} | {r['价']:.2f} | {yi(r['市值'], 0)} "
                  f"| {yi(r['预测净利']['low'])} ~ {yi(r['预测净利']['high'])} "
-                 f"| {r['前瞻PE']:.1f}x | "
+                 f"| {r['pe31']:.1f}x | "
                  + (f"{b['p50']:.1f}x" if b.get("ok") else "—") + " | "
                  + (f"**{rel:.2f}x**" if rel else "—") + " | "
                  + (f"{r['方法数']}/3 个方法" if r["方法数"] else "**0/3,推不出**") + " |")
@@ -217,8 +314,10 @@ def build(pairs, raw: Path) -> str:
     L.append("- **不引用机构的盈利预测作为输入。** 各只报告的第 6 节有市场怎么看,"
              "那一节的数据没有进入前五节任何一步。")
     L.append("- **不用新闻和市场情绪。** 没有一个数来自新闻。")
-    L.append("- **不做仓位建议。** 排序回答的是「相对它自己现在贵不贵」,"
-             "不是「该买多少」—— 后者取决于你的资金、期限和承受能力,不在数据里。")
+    L.append("- **给仓位上限,不给仓位建议。** 上限是从 bear 情景倒推的:"
+             "「最坏那一档兑现时,最多亏净资产的 10%」→ 反推最多能拿多少。"
+             "它回答的是「最多不能超过多少」,**不回答「该买多少」** —— "
+             "后者取决于你还有多少别的钱、这笔钱多久要用,那些不在数据里。")
     L.append("")
 
     L.append("## 7 数据来源:每条都能点开核对")
@@ -253,13 +352,16 @@ def main() -> int:
                                  formatter_class=argparse.RawDescriptionHelpFormatter)
     ap.add_argument("pairs", nargs="+", help="形如 300502:新易盛")
     ap.add_argument("--raw", default="data/raw")
+    ap.add_argument("--holdings", default="private/portfolio/account.json",
+                    help="持仓与账户。**不给的话仓位上限整列算不出** —— 而超限是「先动哪只」的第一条规则")
     ap.add_argument("--out")
     a = ap.parse_args()
     pairs = []
     for x in a.pairs:
         c, _, n = x.partition(":")
         pairs.append((c.strip(), n.strip() or c.strip()))
-    md = build(pairs, Path(a.raw))
+    hp = Path(a.holdings) if a.holdings else None
+    md = build(pairs, Path(a.raw), hp if hp and hp.exists() else None)
     if a.out:
         Path(a.out).parent.mkdir(parents=True, exist_ok=True)
         Path(a.out).write_text(md, encoding="utf-8")
