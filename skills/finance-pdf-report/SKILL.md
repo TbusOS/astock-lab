@@ -89,8 +89,11 @@ dreport 300308 --tolerance 30 --out r.html    # ③ 渲染成给人看的
 ## 一　工具链
 
 ```bash
-# playwright 在 sky-skills 的 node_modules 里,脚本必须在那个目录跑
-cd ~/claude-tools/sky-skills
+# 在哪个目录跑都行:脚本自己按顺序找 playwright
+#   PLAYWRIGHT_ROOT → 内部仓 private/config/local.json 里本机的 playwright_root
+#   → 当前目录 → ~/claude-tools/sky-skills
+# 本机路径不写进公开仓:写在内部仓 local.json 的 hosts[<主机名>].playwright_root
+# 都找不到会列出试过的目录并退出 2
 node <本 skill>/scripts/html2pdf.mjs <报告.html> <输出.pdf> ["页脚文字"]
 ```
 

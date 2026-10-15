@@ -578,16 +578,11 @@ dreport 300502 --tolerance 30 --out 报告.html                  # ⑧ 出给人
 **不要用 md2pdf** —— 它不支持行内粗体和颜色,出来是纯黑白。
 
 ```bash
-# HTML → PDF(在 sky-skills 目录跑,那里有 playwright)
-cd ~/claude-tools/sky-skills && node <<'EOF'
-import { chromium } from 'playwright'; import path from 'path';
-const b = await chromium.launch(); const p = await b.newPage();
-await p.goto('file://' + path.resolve(process.argv[2]), {waitUntil:'networkidle'});
-await p.emulateMedia({media:'print'});
-await p.pdf({path:process.argv[3], format:'A4', printBackground:true,
-  margin:{top:'12mm',bottom:'12mm',left:'10mm',right:'10mm'}});
-await b.close();
-EOF
+# HTML → PDF:用 skill finance-pdf-report 的脚本,它自己找 playwright,任意目录都能跑
+# (本机装好的 skill 在 ~/.claude/skills/finance-pdf-report)
+node <finance-pdf-report 目录>/scripts/html2pdf.mjs 报告.html 报告.pdf "页脚文字"
+# 2026-10-16 改:原来这里是 cd ~/claude-tools/sky-skills 后跑一段内联脚本 ——
+# 那个目录在有的机器上不存在,而且 heredoc 里 process.argv[2] 拿不到参数,跑不通
 ```
 
 ---

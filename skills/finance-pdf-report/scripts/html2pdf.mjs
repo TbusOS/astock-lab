@@ -17,10 +17,36 @@ import path from 'path';
 import fs from 'fs';
 import os from 'os';
 import { createRequire } from 'module';
+import { fileURLToPath } from 'url';
+
+// 本机专属路径(比如这台机器的 sky-skills 装在哪)**不写进公开仓**,写在内部仓:
+//   <内部仓>/private/config/local.json → {"hosts": {"<主机名>": {"playwright_root": "..."}}}
+// 主机名用 os.hostname();内部仓按 $STOCK_LAB → 脚本所在仓 → ~/astock-lab-private 的顺序找。
+function playwrightRootFromPrivateConfig() {
+  const labs = [process.env.STOCK_LAB];
+  let d = path.dirname(fileURLToPath(import.meta.url));
+  while (d !== path.dirname(d)) {
+    if (fs.existsSync(path.join(d, '.astock-lab-root'))) { labs.push(d); break; }
+    d = path.dirname(d);
+  }
+  labs.push(path.join(os.homedir(), 'astock-lab-private'),
+            path.join(os.homedir(), 'claude-tools', 'astock-lab-private'));
+  for (const lab of labs.filter(Boolean)) {
+    const f = path.join(lab, 'private', 'config', 'local.json');
+    if (!fs.existsSync(f)) continue;
+    try {
+      const host = (JSON.parse(fs.readFileSync(f, 'utf8')).hosts || {})[os.hostname()];
+      if (host && host.playwright_root) return { dir: host.playwright_root, file: f };
+    } catch (e) { console.error(`读 ${f} 失败:${e.message}`); }
+  }
+  return null;
+}
 
 function loadPlaywright() {
+  const cfg = playwrightRootFromPrivateConfig();
   const cands = [
     process.env.PLAYWRIGHT_ROOT,
+    cfg && cfg.dir,
     process.cwd(),
     path.join(os.homedir(), 'claude-tools', 'sky-skills'),
     path.join(os.homedir(), 'claude-tools', '本仓'),
@@ -34,8 +60,9 @@ function loadPlaywright() {
   }
   console.error(
     '找不到 playwright。装一次:\n' +
-    '  cd ~/claude-tools/sky-skills && npm i playwright && npx playwright install chromium\n' +
-    '或指定:PLAYWRIGHT_ROOT=<含 node_modules 的目录> node ...\n' +
+    '  cd <sky-skills 仓> && npm i playwright && npx playwright install chromium\n' +
+    `然后把那个目录写进内部仓 private/config/local.json 的 hosts["${os.hostname()}"].playwright_root,\n` +
+    '或临时指定:PLAYWRIGHT_ROOT=<含 node_modules 的目录> node ...\n' +
     '已试过:' + cands.join(' , '));
   process.exit(2);
 }
