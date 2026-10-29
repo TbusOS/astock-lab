@@ -692,9 +692,11 @@ def counter_evidence(cash: dict | None, act: str) -> list[str]:
     bearish_act = act.startswith(("清仓", "减仓"))
     out = []
 
+    # text 必须是函数:条件为假时不能去格式化 —— 2026-10-30 胜宏「应收同比」为空,
+    # f-string 先于条件求值，整条决策链崩在这里(check_flow_contract ⑨ 抓到)。
     def add(cond, text):
         if cond:
-            out.append(text)
+            out.append(text())
 
     cl, cly = cash.get("合同负债"), cash.get("合同负债同比")
     pre, prey = cash.get("预付款"), cash.get("预付款同比")
@@ -703,29 +705,29 @@ def counter_evidence(cash: dict | None, act: str) -> list[str]:
     ar_y = cash.get("应收同比")
     if bearish_act:
         add(cly is not None and cly > 10 and cl,
-            f"**合同负债 {cl / 1e8:,.2f} 亿,同比 {cly:+.0f}%** —— "
+            lambda: f"**合同负债 {cl / 1e8:,.2f} 亿,同比 {cly:+.0f}%** —— "
             f"合同负债是客户已经打进来的预收款,它在涨说明**订单在增**,"
             f"方向和「减」相反")
         add(prey is not None and prey > 10 and pre,
-            f"**预付款 {pre / 1e8:,.2f} 亿,同比 {prey:+.0f}%** —— "
+            lambda: f"**预付款 {pre / 1e8:,.2f} 亿,同比 {prey:+.0f}%** —— "
             f"预付款是抢上游产能已经付出去的钱,是行为不是说法,"
             f"公司自己在为后面的量做准备")
         add(conv is not None and conv > 80,
-            f"**现金转化率 {conv:.0f}%** —— 利润是真收到钱的,"
+            lambda: f"**现金转化率 {conv:.0f}%** —— 利润是真收到钱的,"
             f"这一条不支持「基本面在恶化」")
         add(ar_y is not None and rev_y is not None and ar_y < rev_y - 10,
-            f"**应收同比 {ar_y:+.0f}% 慢于营收 {rev_y:+.0f}%** —— 收款质量在改善")
+            lambda: f"**应收同比 {ar_y:+.0f}% 慢于营收 {rev_y:+.0f}%** —— 收款质量在改善")
     else:
         add(cly is not None and cly < -10 and cl,
-            f"**合同负债 {cl / 1e8:,.2f} 亿,同比 {cly:+.0f}%** —— 预收款在缩,"
+            lambda: f"**合同负债 {cl / 1e8:,.2f} 亿,同比 {cly:+.0f}%** —— 预收款在缩,"
             f"方向和「拿着」相反")
         add(conv is not None and conv < 50,
-            f"**现金转化率 {conv:.0f}%** —— 利润没有同等地变成现金")
+            lambda: f"**现金转化率 {conv:.0f}%** —— 利润没有同等地变成现金")
         add(ar_y is not None and rev_y is not None and ar_y > rev_y + 20,
-            f"**应收同比 {ar_y:+.0f}% 快于营收 {rev_y:+.0f}%** —— "
+            lambda: f"**应收同比 {ar_y:+.0f}% 快于营收 {rev_y:+.0f}%** —— "
             f"收入增长里有一部分还只是账面上的")
         add(inv_y is not None and rev_y is not None and inv_y > rev_y + 40,
-            f"**存货同比 {inv_y:+.0f}% 远快于营收 {rev_y:+.0f}%** —— 可能在积压")
+            lambda: f"**存货同比 {inv_y:+.0f}% 远快于营收 {rev_y:+.0f}%** —— 可能在积压")
     return out
 
 
