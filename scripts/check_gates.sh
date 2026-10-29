@@ -37,6 +37,15 @@ run "3c 深度报告层合约" "$PY" "$LAB/scripts/check_report_contract.py"
 #   私有仓(有 data/raw)→ 同一批项目真的查一遍。
 #   「目录不存在」= 跳过,「目录在但内容缺」= 红 —— 规则在 check_flow_contract 里。
 run "3d 判断流程合约"     "$PY" "$LAB/tools/check_flow_contract.py" --raw "${ASTOCK_RAW:-data/raw}"
+# 3e~3g 是 2026-10-29 第一次正式复核前加的:journal 缺概率不拦、probs=None 崩、
+# 动作做没做看不出;preport 三季报后动态 PE 低估三分之一、两只一起跑小节串位;
+# 大盘层(market)的计算。三道都不联网,每道都拿旧版反向跑过 —— 旧版必须不过。
+run "3e journal 行为"     "$PY" "$LAB/scripts/check_journal.py"
+run "3f preport 不联网部分" "$PY" "$LAB/scripts/check_preport.py"
+run "3g 大盘层计算"       "$PY" "$LAB/tools/market.py" --self-test
+# 3h(2026-10-30):复核季度预测时只看「落在区间里」会两头看错 —— 第一次核三季度,
+# 5 只按区间只中 2 只,可 5 只偏中枢都不超过历史中位 12.7%。
+run "3h 季度预测评分"     "$PY" "$LAB/scripts/check_review_scoring.py"
 run "4 软链无断链"        bash -c '
   b=0
   for l in '"$LAB"'/tools/*; do [ -e "$l" ] || { echo "   断链 $l"; b=1; }; done

@@ -129,6 +129,7 @@ except Exception:
 
 br = _load_sibling("baserate", "stock-analysis-workflow")
 sectors = _load_sibling("sectors", "stock-analysis-workflow")
+market = _load_sibling("market", "stock-analysis-workflow")
 md2html = _load_sibling("md2html", "finance-pdf-report")
 
 _EF_REPO = _lab_root() / "repos" / "efinance"
@@ -311,7 +312,10 @@ def sec_fundamental(code):
     got = False
     if ef is not None:
         try:
-            p = ef.stock.get_all_company_performance()
+            # 报告期要显式取:efinance 不传日期时也是用最新报告期，但返回的表里没有这一列，
+            # 下游「动态 PE」不知道这份净利是几个月的累计(见 annualize_net)。
+            period = str(ef.stock.get_all_report_dates()["报告日期"].to_list()[0])[:10]
+            p = ef.stock.get_all_company_performance(period)
             r = p[p["股票代码"] == code]
             if len(r):
                 r = r.iloc[0]
@@ -326,7 +330,7 @@ def sec_fundamental(code):
                 say(f"| 每股收益 | {r['每股收益']} 元 | — | — |")
                 say(f"| 每股经营现金流 | {r['每股经营现金流量']:.2f} 元 | — | — |")
                 say()
-                say(f"报告期公告日 {str(r['公告日期'])[:10]}")
+                say(f"报告期 {period}　公告日 {str(r['公告日期'])[:10]}")
                 say()
                 got = True
                 snap("fundamental",
@@ -335,9 +339,10 @@ def sec_fundamental(code):
                      net=float(r["净利润"]) / 1e8, net_yoy=float(r["净利润同比增长"]),
                      net_qoq=float(r["净利润季度环比"]),
                      gm=float(r["销售毛利率"]), roe=float(r["净资产收益率"]),
-                     eps=float(r["每股收益"]), period=str(r["公告日期"])[:10])
+                     eps=float(r["每股收益"]), period=str(r["公告日期"])[:10],
+                     report_period=period)
                 return {"net": r["净利润"], "net_yoy": r["净利润同比增长"],
-                        "gm": r["销售毛利率"], "eps": r["每股收益"]}
+                        "gm": r["销售毛利率"], "eps": r["每股收益"], "period": period}
         except Exception as e:
             say(f"（efinance 全市场业绩表取数失败：{type(e).__name__}）")
             say()
@@ -348,6 +353,26 @@ def sec_fundamental(code):
 
 
 # ── 3 估值 ──────────────────────────────────────────────────────────────────
+_MONTHS = {"03-31": 3, "06-30": 6, "09-30": 9, "12-31": 12}
+
+
+def annualize_net(net, period):
+    """已报的累计净利(亿)折成全年。返回 [(说明, 全年净利)],第一行是保守口径。
+
+    2026-10-29 发现原来不看报告期，一律「累计 × 2」:三季报出来后把 9 个月当半年翻倍，
+    全年多算三分之一，中际印 15.4 倍、实际约 23 倍 —— 数看着正常，不报错。
+    报告期认不出就返回空表，不猜。检查:scripts/check_annualize.py。
+    """
+    m = _MONTHS.get(str(period)[5:10])
+    if m is None:
+        return []
+    if m == 12:
+        return [("全年已报完（实际）", net)]
+    rest = net / m * (12 - m)
+    return [(f"后 {12 - m} 个月与前 {m} 个月持平（保守）", net + rest),
+            (f"后 {12 - m} 个月比前 {m} 个月多 30%（延续环比加速）", net + rest * 1.3)]
+
+
 def sec_valuation(code, price, fund, inv=()):
     say("## 3　估值")
     say()
@@ -376,24 +401,24 @@ def sec_valuation(code, price, fund, inv=()):
         say(f"| {k} | {val} |")
     say()
 
-    # 用半年报净利推全年动态 PE。半年报净利 × 2 是保守口径(不假设 H2 加速)。
-    if cap and fund.get("net"):
+    # 用最新累计净利按报告期折全年，算动态 PE。保守那一档不假设后面加速。
+    fy_rows = annualize_net(fund["net"] / 1e8, fund.get("period", "")) \
+        if cap and fund.get("net") else []
+    if fy_rows:
         try:
             capv = float(str(cap).replace(",", ""))
-            h1 = fund["net"] / 1e8
-            say("按半年报推的动态 PE（市值 ÷ 全年净利）：")
+            say(f"按 {fund['period']} 累计净利折全年的动态 PE（市值 ÷ 全年净利）：")
             say()
             say("| 全年净利假设 | 对应净利 | 动态 PE |")
             say("|---|---|---|")
-            for mult, desc in ((2.0, "H2 与 H1 持平（保守）"),
-                               (2.3, "H2 比 H1 增 30%（延续环比加速）")):
-                fy = h1 * mult
+            for desc, fy in fy_rows:
                 say(f"| {desc} | {fy:.0f} 亿 | **{capv/fy:.1f}x** |")
             say()
+            fy0 = fy_rows[0][1]
             if fund.get("net_yoy"):
-                peg = (capv / (h1 * 2.0)) / fund["net_yoy"]
+                peg = (capv / fy0) / fund["net_yoy"]
                 snap("valuation", pe_ttm=float(pe) if pe else None, cap=capv,
-                     dyn_pe=capv / (h1 * 2.0), peg=peg)
+                     dyn_pe=capv / fy0, peg=peg)
                 m = _mark(inv, "peg")
                 if m:
                     say(f"保守口径 PEG ≈ **{peg:.2f}**"
@@ -1140,6 +1165,42 @@ def _days_between(a, b):
         return "?"
 
 
+def _find_from(line, start):
+    """从 start 往后找 line 在 _OUT 里的位置;找不到返回末尾。"""
+    try:
+        return _OUT.index(line, start)
+    except ValueError:
+        return len(_OUT)
+
+
+def sec_market(codes):
+    """大盘 + 同行背离。所有持仓共用，整份报告只出一次。
+
+    2026-10-29 加:8/27 第一次给中际、新易盛「持有」时，创业板指已在 60 日线下 7 周，
+    之后两只跌 32%~44%,大头是大盘 —— 八层里没有一层在看大盘。
+    同行背离:新易盛三季报前两周就比中际多跌 14 个点，三季报果然差。
+    """
+    if market is None:
+        say("（找不到 market.py(在 skill stock-analysis-workflow 里),大盘这一层跳过）")
+        say()
+        return
+    try:
+        for line in market.regime_lines(title="## 大盘（所有持仓共用）"):
+            say(line)
+    except Exception as e:
+        say(f"## 大盘（所有持仓共用）\n\n（取数失败 {type(e).__name__}: {e}）\n")
+    for i, a in enumerate(codes):
+        for b in codes[i + 1:]:
+            try:
+                for line in market.peer_lines(a, b, title=f"## 同行背离：{a} vs {b}"):
+                    say(line)
+            except Exception as e:
+                say(f"## 同行背离：{a} vs {b}\n\n（取数失败 {type(e).__name__}）\n")
+    if len(codes) > 1:
+        say("> 同行背离只对同一赛道的票有意义;不同赛道的两只差多少都正常。")
+        say()
+
+
 def run_one(code, cost, args):
     prev = load_prev_snapshot(code, time.strftime("%Y-%m-%d"))
     jr = load_open_journal(code)
@@ -1152,8 +1213,10 @@ def run_one(code, cost, args):
     del _OUT[_mark0:]
     _SNAP["sector"] = {"name": sector, "invalid_keys": list(inv)}
     name, price = sec_position(code, cost)
-    # 插到「## 1　持仓状况」之前 —— 先判赛道再看数
-    _at = _OUT.index("## 1　持仓状况") if "## 1　持仓状况" in _OUT else len(_OUT)
+    # 插到**这一只的**「## 1　持仓状况」之前 —— 先判赛道再看数。
+    # 必须从 _mark0 往后找:一次跑两只时，从头找会找到第一只的标题，
+    # 第二只的赛道就插进了第一只的报告(2026-10-29 发现，检查见 scripts/check_preport.py)。
+    _at = _find_from("## 1　持仓状况", _mark0)
     _OUT[_at:_at] = sector_lines
     fund = sec_fundamental(code)
     sec_valuation(code, price, fund, inv)
@@ -1168,7 +1231,7 @@ def run_one(code, cost, args):
     # 采集要等所有层跑完,而读者要先看到「跟上次比什么变了」。
     if not args.no_diff:
         # 插在第 1 层之前、但在第 0a 节(赛道)之后 —— 赛道是读一切的前提
-        head = _OUT.index("## 1　持仓状况") if "## 1　持仓状况" in _OUT else len(_OUT)
+        head = _find_from("## 1　持仓状况", _mark0)
         tail = _OUT[head:]
         del _OUT[head:]
         sec_diff(prev, code)
@@ -1204,11 +1267,16 @@ def main():
                    help="同时出一份带版式的 HTML(浏览器可看,也能打印成 PDF)")
     p.add_argument("--no-diff", action="store_true",
                    help="跳过第 0 节「与上次对比」")
+    p.add_argument("--no-market", action="store_true",
+                   help="跳过开头的大盘与同行背离(省约 3 秒)")
     a = p.parse_args()
 
     if not a.holdings:
         print(__doc__)
         return 1
+
+    if not a.no_market:
+        sec_market([h.split(":", 1)[0].strip() for h in a.holdings])
 
     for h in a.holdings:
         if ":" in h:

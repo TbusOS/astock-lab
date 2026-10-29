@@ -188,6 +188,12 @@ def write(raw: Path, code: str, a: dict, f: dict, position: dict,
         # 「这次为什么没给动作」。**空字符串和「不给动作」是两回事** ——
         # 前者是正常给了动作,后者要在复核时知道当初卡在哪一步。
         "no_action_why": "" if d.get("ok") else (d.get("why") or "未说明"),
+        # 清仓 / 减仓要在一周内做完，跟 journal log 的规则一样(journal.py 的 MUST_DO)。
+        # 2026-09-02「减到仓位上限」没执行，记录里也看不出没执行 —— 有了期限，
+        # journal review 会把过期没做的列出来。「可加仓」是可选的，不设期限。
+        "deadline": ((dt.date.fromisoformat(day) + dt.timedelta(days=7)).isoformat()
+                     if str(a["动作"]).startswith(("清仓", "减仓")) else None),
+        "executed": None,
         "status": "open",
     }
     save(p, kept + [rec])

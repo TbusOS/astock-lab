@@ -233,8 +233,22 @@ def check_journal(raw: Path):
     #    「验过了」和「跳过了」以前外观完全一样(破坏测试 6b:删掉 price 之后
     #    一条差 5 个百分点的错记录静静溜过去,全绿)。
     need = ("price", "scenario_px", "probs", "ev")
-    incomplete, no_act = [], []
+    incomplete, no_act, declared = [], [], []
     for r in rows:
+        # 2026-10-29 加的三种合法空(journal.py 同一天定的规矩):被取代的中间版本、
+        # watch(概率写在 thesis 里)、明说了为什么给不了(journal log/edit --no-probs)。
+        # 跟「不给动作」一样,**必须明说自己是哪一类**,并留下当时的价和复核日。
+        sup = r.get("status") == "superseded"
+        if sup or r.get("action") == "watch" or r.get("no_probs_why"):
+            miss = [k for k in ("price", "check_date") if not r.get(k)]
+            if sup and not r.get("superseded_by"):
+                miss.append("superseded_by")
+            if miss:
+                incomplete.append(f"#{r.get('id')} {r.get('code')} 标了合法空,"
+                                  f"但连 {'/'.join(miss)} 都没记")
+            else:
+                declared.append(f"#{r.get('id')}")
+            continue
         if str(r.get("action", "")).startswith("不给动作"):
             # 「不给动作」的记录本来就没有价位和概率 —— 但它必须**明说自己是这一类**,
             # 而且要留下当时的价和原因,否则复核时连「那天它多少钱、卡在哪一步」
@@ -261,7 +275,9 @@ def check_journal(raw: Path):
            f"这条判断准不准永远说不清" if incomplete else "")
         + (f"。其中 {len(no_act)} 条是「不给动作」({'、'.join(no_act)}),"
            f"它们本来就没有价位和概率,但都记了当时的价和不给的原因"
-           if no_act else ""))
+           if no_act else "")
+        + (f"。另有 {len(declared)} 条明说了为什么没有概率(被取代 / watch / --no-probs):"
+           f"{'、'.join(declared)}" if declared else ""))
     bad, checked = [], 0
     for r in rows:
         px, pr, ev, price = (r.get("scenario_px") or {}), (r.get("probs") or {}), \
@@ -722,6 +738,22 @@ class _Watch:
         return False
 
 
+def check_counter_evidence_none():
+    """⑪ 不要数据盘:现金流各项全是空值时 counter_evidence 不许崩。
+
+    2026-10-30 刷新三季报后，胜宏的「应收同比」是空值 —— add(cond, f"...") 的 f-string
+    先于条件求值，条件为假也照样去格式化 None,整条决策链在 ⑨ 崩掉。
+    以前没崩只是因为那几个值碰巧都有。
+    """
+    import decision
+    blank = {"ok": True, "合同负债": None, "合同负债同比": None, "预付款": None,
+             "预付款同比": None, "现金转化率": None, "存货同比": None,
+             "营收同比": 50.0, "应收同比": None}
+    for act in ("减仓", "持有"):
+        decision.counter_evidence(blank, act)
+    chk(True, "counter_evidence 在现金流各项为空时不崩(减仓 / 持有两条分支都走过)")
+
+
 def check_live(raw: Path):
     """⑨ 真跑一遍五只的 `advice.build`,一次性验四件事 + 运行期不碰机构预测。"""
     if not have_data(raw, "⑨"):
@@ -842,6 +874,7 @@ def main() -> int:
         ("⑩ 报告层", check_reports, (raw,)),
         ("⑩b 最坏情况表不按「不跌」算", check_stress_drop, (raw,)),
         ("⑩c 外部研报只印研报内容", check_extern_notes, ()),
+        ("⑪ 反向证据遇到空值不崩", check_counter_evidence_none, ()),
     ]
     for label, fn, args in steps:
         print(f"── {label} ──")

@@ -108,6 +108,36 @@ def hit(band: dict | None, actual):
     return inside, dev
 
 
+def grade(inside, dev, ref):
+    """「落在区间里」和「偏中枢多少」合起来给一句评价。ref = 走前回测的中枢误差中位数(%)。
+
+    只看区间会两头看错(2026-10-30 第一次核三季度):区间宽(中位 45%)时落在里面说明不了
+    什么;区间窄时差一点就判「没中」—— 杰瑞、深科达只偏中枢 4%~6%,因为只有 1~2 个
+    方法能用、区间太窄被判错。分界线用走前回测的历史中位数，不拍一个 10%。
+    """
+    if inside is None or dev is None:
+        return "—"
+    if ref is None:
+        return ("在区间里" if inside else "落在区间外") + "(没有走前回测参照，不判准不准)"
+    near = abs(dev) <= ref
+    if inside:
+        return "✅ 准" if near else "◐ 在区间里，但偏中枢超过历史中位 —— 是区间宽救了它"
+    return "◐ 中枢准、区间太窄" if near else "❌ 错"
+
+
+def _width(band: dict | None):
+    return None if not band or not band.get("low") else (band["high"] / band["low"] - 1) * 100
+
+
+def _ref_dev(raw: Path):
+    """走前回测(--walkforward)存下的营收中枢误差中位数;没跑过就返回 None。"""
+    p = raw.parent / "backtest" / "revenue-summary.json"
+    try:
+        return json.loads(p.read_text(encoding="utf-8"))["并集"]["中位绝对偏差"]
+    except (OSError, ValueError, KeyError, TypeError):
+        return None
+
+
 def price_on(raw: Path, code: str, on_or_after: str):
     """某天(或之后第一个交易日)的前复权收盘价。找不到返回 None。"""
     fs = sorted(glob.glob(str(raw / f"quotes/{code}/*-qfq.json")))
@@ -157,22 +187,37 @@ def build(raw: Path, pred_dir: Path, today: str | None = None) -> str:
         ni_in, ni_dev = hit(p.get("归母净利区间"), act["归母净利"])
         rows.append({"code": code, "period": period, "act": act,
                      "rv": (rv_in, rv_dev), "ni": (ni_in, ni_dev),
-                     "n": p.get("可用方法数")})
+                     "w": _width(p.get("营收区间")), "n": p.get("可用方法数")})
+    ref = _ref_dev(raw)
     if rows:
-        L.append("| 代码 | 预测期 | 用了几个方法 | 实际营收(亿) | 落在区间? | 偏中枢 "
-                 "| 实际归母净利(亿) | 落在区间? | 偏中枢 |")
-        L.append("|---|---|---:|---:|:-:|---:|---:|:-:|---:|")
+        L.append("| 代码 | 预测期 | 用了几个方法 | 实际营收(亿) | 区间宽 | 落在区间? | 偏中枢 "
+                 "| 评价 | 实际归母净利(亿) | 落在区间? | 偏中枢 |")
+        L.append("|---|---|---:|---:|---:|:-:|---:|---|---:|:-:|---:|")
         for r in rows:
             L.append(f"| {r['code']} | {r['period']} | {r['n']} "
                      f"| {r['act']['营收'] / 1e8:,.1f} "
-                     f"| {'✅' if r['rv'][0] else '❌'} "
+                     + (f"| {r['w']:.0f}% " if r["w"] is not None else "| — ")
+                     + f"| {'✅' if r['rv'][0] else '❌'} "
                      f"| {r['rv'][1]:+.1f}% "
+                     f"| {grade(r['rv'][0], r['rv'][1], ref)} "
                      f"| {(r['act']['归母净利'] or 0) / 1e8:,.1f} "
                      f"| {'✅' if r['ni'][0] else '❌'} "
                      + (f"| {r['ni'][1]:+.1f}% |" if r["ni"][1] is not None else "| — |"))
         L.append("")
         ok_n = sum(1 for r in rows if r["rv"][0])
+        devs = [abs(r["rv"][1]) for r in rows if r["rv"][1] is not None]
         L.append(f"**{ok_n}/{len(rows)} 只的营收落在我们的区间里。**")
+        if devs and ref is not None:
+            near = sum(1 for x in devs if x <= ref)
+            L.append("")
+            L.append(f"**{near}/{len(devs)} 只的营收偏中枢不超过历史中位({ref:.1f}%)**,"
+                     f"这一批中枢误差中位 {statistics.median(devs):.1f}%。"
+                     f"「落在区间里」和「偏中枢多少」要一起看:区间宽时前者说明不了什么,"
+                     f"区间窄时差一点就判没中。")
+        elif devs:
+            L.append("")
+            L.append(f"这一批营收中枢误差中位 {statistics.median(devs):.1f}%。"
+                     f"还没跑过 `--walkforward`,没有历史参照，判不了算准还是不准。")
         if len(rows) < 10:
             L.append("")
             L.append(f"⚠ **只有 {len(rows)} 个样本,这个比例说明不了什么。** "

@@ -14,11 +14,17 @@
         --check 2026-10-31
 
     # ② 到期回来复核（下个季报）
-    $P $J review                       # 列出所有到期未复核的
-    $P $J close <id> --outcome right --note "Capex 同比仍 +80%，判据未触发"
+    $P $J review                       # 列出所有到期未复核的 + 过了期限还没执行的动作
+    $P $J close <id> --outcome right --note "Capex 同比仍 +80%，判据未触发" \
+        --actual-price 520 --bench-return -9.5      # 同期大盘涨跌，用来算超额
 
     # ③ 看自己的记录与偏差
-    $P $J stats                        # 命中率、概率校准、系统性偏差
+    $P $J stats                        # 命中率、按动作分组、概率校准、系统性偏差
+
+    # ④ 记录本身的维护
+    $P $J exec <id> --done --note "已按计划减到上限"    # 动作做了没有（--skip 要写理由）
+    $P $J supersede <旧id> --by <新id>                   # 当晚改了几版，旧版不算命中率
+    $P $J edit <id> --check 2027-01-31                   # 改复核日 / 判据 / 期限，留痕
 
 为什么要有这个（这是本方法最大的漏洞）:
     现在的流程是单向的 —— 分析 → 给建议 → 结束。**没有任何机制记录
@@ -141,6 +147,44 @@ def _save_all(p, rows):
             f.write(json.dumps(r, ensure_ascii=False) + "\n")
 
 
+ACTIONS = ["buy", "add", "hold", "trim", "sell", "watch"]
+# 要「去做」的动作才有执行期限。2026-09-02「减到仓位上限」没执行，之后 6 周两只又跌了三成多 ——
+# 当时记录里只有判断，没有「做了没有」，复核时连这件事都看不出来。
+MUST_DO = {"buy", "add", "trim", "sell"}
+DEADLINE_DAYS = 7
+# forecast-from-facts 的 journal_log 写的是中文动作（decision.py 的 EV_CUTS）。
+# 按前缀归类，顺序有讲究:「持有,不加仓」含「加仓」，必须先认「持有」。
+_ZH_ACTIONS = (("清仓", "sell"), ("减仓", "trim"), ("持有", "hold"),
+               ("可加仓", "add"), ("加仓", "add"), ("买", "buy"), ("不给动作", "watch"))
+
+
+def norm_action(s):
+    """把动作统一成六类,统计时才能分组。认不出的归 other，不硬猜。"""
+    s = str(s or "")
+    if s in ACTIONS:
+        return s
+    for prefix, act in _ZH_ACTIONS:
+        if s.startswith(prefix):
+            return act
+    return "other"
+
+
+def _find(rows, rid):
+    hit = [r for r in rows if r.get("id") == rid]
+    if not hit:
+        sys.exit(f"没有 #{rid} 这条记录")
+    return hit[0]
+
+
+def _overdue(rows, today):
+    """过了执行期限还没执行的动作。只看写了 deadline 的记录 —— 老记录没有这一栏，不追溯。"""
+    return [r for r in rows
+            if r.get("status") != "superseded"
+            and norm_action(r.get("action")) in MUST_DO
+            and r.get("deadline") and r["deadline"] < today
+            and not r.get("executed")]
+
+
 def cmd_log(a):
     rows = _load(JOURNAL)
     rid = max([r.get("id", 0) for r in rows], default=0) + 1
@@ -149,6 +193,15 @@ def cmd_log(a):
     if tot and abs(tot - 1.0) > 0.02:
         print(f"⚠ 三情景概率之和 = {tot:.2f}，不是 1.00 —— 确认是不是写错了",
               file=sys.stderr)
+    # 概率和三个价位是复核时「算准不准」的唯一依据。2026-10-16 以后 14 条判断都没带，
+    # 到复核日只能说对错，说不出偏了多少。所以除了 watch，缺了就拒绝，
+    # 真给不出（比如纯规则信号）要用 --no-probs 写明理由 —— 不许一声不吭地缺。
+    need = [f"--{k}" for k in ("bear", "base", "bull") if probs[k] is None] + \
+           [f"--{k}-px" for k, v in (("bear", a.bear_px), ("base", a.base_px),
+                                     ("bull", a.bull_px)) if v is None]
+    if need and a.action != "watch" and not a.no_probs:
+        sys.exit(f"❌ 缺 {' '.join(need)}。复核时没法算这条判断偏了多少。\n"
+                 f"   补上，或用 --no-probs \"理由\" 写明为什么给不了。")
 
     # 三情景的**价位**。为什么必须单独存而不能留在 thesis 散文里
     # （2026-08-28 做深度报告时才发现的坑）:
@@ -171,6 +224,16 @@ def cmd_log(a):
         if abs(calc - a.ev) > 2.0:
             print(f"⚠ EV 对不上:你写 {a.ev:+.1f}%，按三情景价位×概率算是 "
                   f"{calc:+.1f}%（差 {abs(calc - a.ev):.1f}pp）", file=sys.stderr)
+    ev = a.ev
+    if ev is None and a.price and all(px.get(k) is not None for k in ("bear", "base", "bull")) \
+            and all(probs.get(k) is not None for k in ("bear", "base", "bull")):
+        ev = round(sum(probs[k] * (px[k] / a.price - 1) * 100
+                       for k in ("bear", "base", "bull")), 1)
+        print(f"EV 没写，按三情景价位×概率算出 {ev:+.1f}%")
+    deadline = a.deadline
+    if deadline is None and a.action in MUST_DO:
+        deadline = (dt.date.today() + dt.timedelta(days=DEADLINE_DAYS)).isoformat()
+        print(f"执行期限没写，默认 {DEADLINE_DAYS} 天后:{deadline}（做完用 journal exec {rid} --done）")
     rec = {
         "id": rid,
         "logged_at": dt.datetime.now().isoformat(timespec="seconds"),
@@ -178,24 +241,34 @@ def cmd_log(a):
         "price": a.price,
         "cost": a.cost,
         "action": a.action,
-        "ev": a.ev,
+        "ev": ev,
         "probs": probs,
         "scenario_px": px,           # 三情景**价位**（画赔率图、算下行空间靠它）
+        "no_probs_why": a.no_probs,  # 没给概率的理由（给了就是 None）
         "thesis": a.thesis,          # 当时的预期差判断
         "falsify": a.falsify,        # 可证伪判据 —— 复核时就核这条
         "check_date": a.check,       # 什么时候回来核
+        "deadline": deadline,        # 动作的执行期限（watch / hold 没有）
+        "executed": None,            # journal exec 填:做了 / 没做及理由
         "status": "open",
     }
     _append(JOURNAL, rec)
-    print(f"已记录 #{rid}　{a.code}　{a.action}　EV {a.ev}%　复核日 {a.check}")
+    print(f"已记录 #{rid}　{a.code}　{a.action}　EV {ev}%　复核日 {a.check}")
     if not a.falsify:
         print("⚠ 没写可证伪判据 —— 那这条记录复核时无从核起，"
-              "补一条:journal edit 或重记", file=sys.stderr)
+              f"补一条:journal edit {rid} --falsify \"...\"", file=sys.stderr)
 
 
 def cmd_review(a):
     rows = _load(JOURNAL)
     today = dt.date.today().isoformat()
+    late = _overdue(rows, today)
+    if late:
+        print(f"⚠ 过了执行期限还没执行的动作 {len(late)} 条（做了用 journal exec <id> --done，"
+              f"没做用 --skip --note 写理由）：")
+        for r in late:
+            print(f"   #{r['id']}　{r['code']}　{r.get('action')}　期限 {r['deadline']}　没执行")
+        print()
     due = [r for r in rows
            if r.get("status") == "open"
            and (a.all or (r.get("check_date") or "9999") <= today)]
@@ -206,25 +279,68 @@ def cmd_review(a):
         return
     print(f"待复核 {len(due)} 条：\n")
     for r in due:
+        p = r.get("probs") or {}     # 「不给动作」的记录 probs 是 None，不是空字典
         print(f"── #{r['id']}　{r['code']}　记于 {r['logged_at'][:10]}　"
               f"复核日 {r.get('check_date')}")
-        print(f"   当时:价 {r.get('price')}　动作 **{r.get('action')}**　"
-              f"EV {r.get('ev')}%　概率 "
-              f"熊{r['probs'].get('bear')}/中{r['probs'].get('base')}/牛{r['probs'].get('bull')}")
+        print(f"   当时:价 {r.get('price')}　动作 **{r.get('action')}**"
+              f"（{norm_action(r.get('action'))}）　EV {r.get('ev')}%　概率 "
+              f"熊{p.get('bear')}/中{p.get('base')}/牛{p.get('bull')}")
         if r.get("thesis"):
             print(f"   判断:{r['thesis']}")
         if r.get("falsify"):
             print(f"   **判据:{r['falsify']}**　← 现在就核这条")
         print()
-    print("核完用:journal close <id> --outcome right|wrong|partial --note \"...\"")
+    print("核完用:journal close <id> --outcome right|wrong|partial --note \"...\" "
+          "--actual-price <价> --bench-return <同期大盘涨跌%>")
+
+
+def cmd_exec(a):
+    if a.skip and not a.note:
+        sys.exit("❌ --skip 要写 --note 理由:没做的原因复核时最有用")
+    rows = _load(JOURNAL)
+    r = _find(rows, a.id)
+    r["executed"] = {"result": "done" if a.done else "skipped",
+                     "at": dt.datetime.now().isoformat(timespec="seconds"),
+                     "note": a.note}
+    _save_all(JOURNAL, rows)
+    print(f"#{a.id} 执行情况:{r['executed']['result']}　{a.note or ''}")
+
+
+def cmd_supersede(a):
+    """同一天改了几版，旧版标「被取代」:不进复核、不算命中率，但留在时间线里。"""
+    rows = _load(JOURNAL)
+    old, new = _find(rows, a.id), _find(rows, a.by)
+    if old.get("status") != "open":
+        sys.exit(f"❌ #{a.id} 是 {old.get('status')} 状态，只有未结的才能标被取代")
+    if old.get("code") != new.get("code"):
+        print(f"⚠ #{a.id}({old.get('code')}) 和 #{a.by}({new.get('code')}) 不是同一只票",
+              file=sys.stderr)
+    old.update(status="superseded", superseded_by=a.by,
+               superseded_at=dt.datetime.now().isoformat(timespec="seconds"),
+               superseded_note=a.note)
+    _save_all(JOURNAL, rows)
+    print(f"#{a.id} 已标为被 #{a.by} 取代")
+
+
+def cmd_edit(a):
+    rows = _load(JOURNAL)
+    r = _find(rows, a.id)
+    changes = {k: v for k, v in (("check_date", a.check), ("falsify", a.falsify),
+                                 ("deadline", a.deadline), ("no_probs_why", a.no_probs))
+               if v is not None}
+    if not changes:
+        sys.exit("没有要改的:--check / --falsify / --deadline / --no-probs 至少给一个")
+    now = dt.datetime.now().isoformat(timespec="seconds")
+    for k, v in changes.items():
+        r.setdefault("edits", []).append({"at": now, "field": k, "old": r.get(k), "new": v})
+        r[k] = v
+    _save_all(JOURNAL, rows)
+    print(f"#{a.id} 已改:{', '.join(changes)}（旧值存在 edits 里）")
 
 
 def cmd_close(a):
     rows = _load(JOURNAL)
-    hit = [r for r in rows if r.get("id") == a.id]
-    if not hit:
-        sys.exit(f"没有 #{a.id} 这条记录")
-    r = hit[0]
+    r = _find(rows, a.id)
     if r.get("status") != "open":
         print(f"⚠ #{a.id} 已经是 {r['status']} 状态，本次覆盖")
     r["status"] = "closed"
@@ -234,11 +350,18 @@ def cmd_close(a):
     r["actual_price"] = a.actual_price
     if a.actual_price and r.get("price"):
         r["actual_return_pct"] = round((a.actual_price / r["price"] - 1) * 100, 1)
+    # 同期大盘:2026-10-16 第一次核对时发现，两只票 −23%~−25% 里约 19 个点是大盘。
+    # 不扣大盘就分不清「判断错了」还是「整个市场在跌」。
+    if a.bench_return is not None:
+        r["bench_return_pct"] = a.bench_return
+        if r.get("actual_return_pct") is not None:
+            r["excess_pct"] = round(r["actual_return_pct"] - a.bench_return, 1)
     _save_all(JOURNAL, rows)
     print(f"#{a.id} 已结:{a.outcome}")
     if r.get("actual_return_pct") is not None:
         print(f"  实际涨跌 {r['actual_return_pct']:+.1f}%　"
-              f"（当时 EV 预期 {r.get('ev')}%）")
+              f"（当时 EV 预期 {r.get('ev')}%）"
+              + (f"　扣掉大盘 {r['excess_pct']:+.1f}%" if r.get("excess_pct") is not None else ""))
     if a.principle:
         p = {
             "distilled_at": dt.datetime.now().isoformat(timespec="seconds"),
@@ -266,8 +389,10 @@ def cmd_stats(a):
     rows = _load(JOURNAL)
     prin = _load(PRINCIPLES)
     closed = [r for r in rows if r.get("status") == "closed"]
-    opens = [r for r in rows if r.get("status") != "closed"]
+    opens = [r for r in rows if r.get("status") == "open"]
+    superseded = [r for r in rows if r.get("status") == "superseded"]
     today = dt.date.today()
+    late = _overdue(rows, today.isoformat())
 
     say("# 自我进化知识库")
     say()
@@ -281,6 +406,8 @@ def cmd_stats(a):
     say(f"| 决策记录 | {len(rows)} 条 |")
     say(f"| 已复核 | {len(closed)} 条 |")
     say(f"| 待复核 | {len(opens)} 条 |")
+    say(f"| 被取代(中间版本，不算命中率) | {len(superseded)} 条 |")
+    say(f"| 过了期限没执行的动作 | {'**' + str(len(late)) + '** 条' if late else '0 条'} |")
     say(f"| 已蒸馏原则 | **{len(prin)}** 条 |")
     if closed:
         rt = sum(1 for r in closed if r.get("outcome") == "right")
@@ -352,6 +479,8 @@ def cmd_stats(a):
             oc = r.get("outcome")
             badge = {"right": "✅ 判对", "partial": "◐ 部分对",
                      "wrong": "❌ 判错"}.get(oc, "○ 待复核")
+            if st == "superseded":
+                badge = f"↷ 被 #{r.get('superseded_by')} 取代"
             say(f"### #{r['id']}　{r['code']}　{badge}")
             say()
             say(f"{str(r.get('logged_at',''))[:10]} 记录　·　当时价 "
@@ -385,17 +514,39 @@ def cmd_stats(a):
         say("这一节是整套方法里唯一能证明「我到底准不准」的地方，急不来。")
         say()
     else:
+        # 按动作分组:2026-10-16 第一次核对是手工分的 ——「持有」6 条平均超额 −5.0，
+        # 「减仓」8 条 −11.3，说明系统挑出了更弱的票。这个对比以后每次都该自动出。
+        say("### 按动作分组")
+        say()
+        say("| 动作 | 条数 | 平均涨跌 | 平均超额(扣大盘) |")
+        say("|---|---|---|---|")
+        groups = {}
+        for r in withret:
+            groups.setdefault(norm_action(r.get("action")), []).append(r)
+        for act, rs in sorted(groups.items()):
+            avg_r = sum(x["actual_return_pct"] for x in rs) / len(rs)
+            ex = [x["excess_pct"] for x in rs if x.get("excess_pct") is not None]
+            ex_s = f"{sum(ex) / len(ex):+.1f}%（{len(ex)} 条有大盘数）" if ex else "—"
+            say(f"| {act} | {len(rs)} | {avg_r:+.1f}% | {ex_s} |")
+        say()
+        say("### 期望值 vs 实际")
+        say()
         say("| # | 代码 | 动作 | 当时 EV | 实际涨跌 | 偏差 |")
         say("|---|---|---|---|---|---|")
         gaps = []
         for r in withret:
-            gap = r["actual_return_pct"] - (r.get("ev") or 0)
-            gaps.append(gap)
+            ev = r.get("ev")
+            gap = None if ev is None else r["actual_return_pct"] - ev
+            if gap is not None:      # 没有 EV 的记录不能当 EV=0 去算偏差
+                gaps.append(gap)
             say(f"| {r['id']} | {r['code']} | {r.get('action')} | "
-                f"{r.get('ev')}% | {r['actual_return_pct']:+.1f}% | {gap:+.1f}pp |")
+                f"{'—' if ev is None else f'{ev}%'} | {r['actual_return_pct']:+.1f}% | "
+                f"{'—' if gap is None else f'{gap:+.1f}pp'} |")
         say()
-        avg = sum(gaps) / len(gaps)
-        if avg < -5:
+        avg = sum(gaps) / len(gaps) if gaps else 0.0
+        if not gaps:
+            say("> 已结记录里没有带 EV 的，偏差算不了。")
+        elif avg < -5:
             say(f"> 🔴 **平均比预期低 {-avg:.1f} 个百分点 —— 系统性过度乐观。**"
                 f"下次把 bull 概率调低、bear 调高。")
         elif avg > 5:
@@ -452,8 +603,11 @@ def main():
     lg.add_argument("--thesis", help="当时的预期差判断（市场错在哪、我凭什么这么认为）")
     lg.add_argument("--falsify", help="**可证伪判据** —— 什么情况下这个判断算错")
     lg.add_argument("--check", help="复核日期 YYYY-MM-DD，通常是下个季报")
+    lg.add_argument("--deadline", help=f"执行期限 YYYY-MM-DD;buy/add/trim/sell 不写默认 {DEADLINE_DAYS} 天")
+    lg.add_argument("--no-probs", dest="no_probs", metavar="理由",
+                    help="给不了概率和三个价位时写明理由(否则非 watch 动作缺了就拒绝)")
 
-    rv = sub.add_parser("review", help="列出到期待复核的记录")
+    rv = sub.add_parser("review", help="列出到期待复核的记录 + 过了期限没执行的动作")
     rv.add_argument("--all", action="store_true", help="列出全部未结，不只到期的")
 
     cl = sub.add_parser("close", help="复核并结掉一条记录")
@@ -463,7 +617,29 @@ def main():
     cl.add_argument("--note", help="复核说明：判据触发了吗、错在哪")
     cl.add_argument("--actual-price", type=float, dest="actual_price",
                     help="复核时的价格，用来算实际涨跌与 EV 的偏差")
+    cl.add_argument("--bench-return", type=float, dest="bench_return",
+                    help="同期大盘涨跌 %%（如创业板指），用来算扣掉大盘后的超额")
     cl.add_argument("--principle", help="**蒸馏出的抽象原则**（不是「这次对了」）")
+
+    ex = sub.add_parser("exec", help="记下动作做了没有")
+    ex.add_argument("id", type=int)
+    g = ex.add_mutually_exclusive_group(required=True)
+    g.add_argument("--done", action="store_true", help="做了")
+    g.add_argument("--skip", action="store_true", help="没做(必须 --note 写理由)")
+    ex.add_argument("--note", help="做了什么 / 为什么没做")
+
+    sp = sub.add_parser("supersede", help="把同一天的旧版判断标为被新版取代")
+    sp.add_argument("id", type=int, help="旧版编号")
+    sp.add_argument("--by", type=int, required=True, help="新版编号")
+    sp.add_argument("--note", help="为什么改")
+
+    ed = sub.add_parser("edit", help="改复核日 / 判据 / 执行期限(旧值留在 edits 里)")
+    ed.add_argument("id", type=int)
+    ed.add_argument("--check", help="新的复核日")
+    ed.add_argument("--falsify", help="新的可证伪判据")
+    ed.add_argument("--deadline", help="新的执行期限")
+    ed.add_argument("--no-probs", dest="no_probs", metavar="理由",
+                    help="给当时没带概率的旧记录补上理由(不是事后补概率 —— 那等于看着结果改答案)")
 
     st = sub.add_parser("stats", help="自我进化知识库:原则、时间线、概率校准")
     st.add_argument("--md", metavar="文件", help="存 markdown")
@@ -474,8 +650,9 @@ def main():
     if not a.cmd:
         print(__doc__)
         return 1
-    return {"log": cmd_log, "review": cmd_review,
-            "close": cmd_close, "stats": cmd_stats}[a.cmd](a) or 0
+    return {"log": cmd_log, "review": cmd_review, "close": cmd_close,
+            "stats": cmd_stats, "exec": cmd_exec, "supersede": cmd_supersede,
+            "edit": cmd_edit}[a.cmd](a) or 0
 
 
 if __name__ == "__main__":
