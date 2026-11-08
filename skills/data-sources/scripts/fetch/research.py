@@ -1,8 +1,9 @@
 #!/usr/bin/env python3
-"""research —— 券商研报:列表 + 全文 PDF + 产业数据抽句 + 目标价分布。
+"""research —— 券商研报:列表 + 盈利预测上下调 + 全文 PDF + 产业数据抽句 + 目标价分布。
 
 用法:
-    research 300502                    # 近一年研报列表 + 评级/目标价分布
+    research 300502                    # 近一年研报列表 + 评级/目标价分布 + 盈利预测怎么变
+    research 300502 --no-eps           # 跳过盈利预测那节(第一次要下载每篇 PDF 读年份和净利润)
     research 300502 --dig 3            # 再下载最新 3 篇 PDF，抽产业数据句子
     research 300502 --dig 3 --kw 1.6T,产能,出货   # 自定义关键词
     research 300502 --since 2026-06-01 --md r.md
@@ -134,6 +135,10 @@ def fetch_list(code, since, until, max_pages=5):
                 "tp_lo": _f(lo), "tp_hi": _f(hi),
                 "researcher": it.get("researcher") or "",
                 "info": it.get("infoCode") or "",
+                # 盈利预测三格。⚠「本年」不是发布那年 —— 是哪一年要读 PDF 表头才知道,
+                # 见 eps_revisions.py。0 和空都当没有。
+                "eps": [_eps(it.get(k)) for k in ("predictThisYearEps", "predictNextYearEps",
+                                                  "predictNextTwoYearEps")],
             })
         page += 1
     out.sort(key=lambda x: x["date"], reverse=True)
@@ -146,6 +151,38 @@ def _f(v):
         return None if x <= 0 else x
     except (TypeError, ValueError):
         return None
+
+
+def _eps(v):
+    """EPS 可以是负数(亏损),所以不能用 _f;只有 0 和空当没有。"""
+    try:
+        x = float(v)
+        return None if x == 0 else x
+    except (TypeError, ValueError):
+        return None
+
+
+def sec_eps(rows, code):
+    """第二节:盈利预测上下调(比归母净利润，读不出才比每股收益)。
+
+    第一次跑要下载每篇 PDF 读年份和净利润(一年几十篇约 1~2 分钟),之后读缓存。
+    """
+    try:
+        import pymupdf
+    except ImportError:
+        say("## 二　盈利预测怎么变")
+        say()
+        say("（没装 pymupdf,读不了 PDF 里的年份和净利润,这一节跳过。`pip install pymupdf`）")
+        say()
+        return
+    import eps_revisions as er
+    fetch = lambda info: _get(PDF_URL.format(info), referer="https://data.eastmoney.com/",
+                              timeout=40, binary=True)
+    text = lambda b: "\n".join(pg.get_text() for pg in pymupdf.open(stream=b, filetype="pdf"))
+    got = er.resolve(rows, _lab_root() / "data" / "research" / code, fetch, text)
+    y = dt.date.today().year
+    for line in er.lines(got, dt.date.today().isoformat(), (y, y + 1, y + 2)):
+        say(line)
 
 
 def sec_list(rows, code, since):
@@ -244,7 +281,7 @@ def extract(pdf_bytes, kws, ctx=70, limit=8):
 
 
 def sec_dig(rows, n, kws, save_dir):
-    say(f"## 二　产业数据抽句（最新 {n} 篇全文）")
+    say(f"## 三　产业数据抽句（最新 {n} 篇全文）")
     say()
     say("研报正文里的**产业事实**（出货、产能、价格方向）通常有一手调研支撑，"
         "比结论部分可信。这里按关键词把相关句子抽出来 —— "
@@ -310,6 +347,8 @@ def main():
     p.add_argument("--save", action="store_true",
                    help="把下载的 PDF 存到 data/research/<代码>/")
     p.add_argument("--md", metavar="文件", help="存 markdown")
+    p.add_argument("--no-eps", action="store_true", dest="no_eps",
+                   help="跳过「盈利预测怎么变」(第一次要下载每篇 PDF 读年份和净利润)")
     a = p.parse_args()
     if not a.code:
         print(__doc__)
@@ -329,6 +368,8 @@ def main():
         return 2
 
     sec_list(rows, code, since)
+    if rows and not a.no_eps:
+        sec_eps(rows, code)
     if a.dig and rows:
         save = (_lab_root() / "data" / "research" / code) if a.save else None
         sec_dig(rows, a.dig, kws, save)

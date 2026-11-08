@@ -259,6 +259,37 @@ def cmd_log(a):
               f"补一条:journal edit {rid} --falsify \"...\"", file=sys.stderr)
 
 
+def _print_due(r):
+    p = r.get("probs") or {}     # 「不给动作」的记录 probs 是 None，不是空字典
+    print(f"── #{r['id']}　{r['code']}　记于 {str(r.get('logged_at', ''))[:10]}　"
+          f"复核日 {r.get('check_date')}"
+          + (f"　被 #{r.get('superseded_by')} 取代" if r.get("status") == "superseded" else ""))
+    # 没给概率的记录(规则信号、不给动作)EV 和概率都是空的:照实写没给,不打「EV None%」
+    ev = f"EV {r['ev']}%" if r.get("ev") is not None else "EV 没算(没给概率)"
+    given = any(p.get(k) is not None for k in ("bear", "base", "bull"))   # --no-probs 记的是三个 None
+    pr = (f"概率 熊{p.get('bear')}/中{p.get('base')}/牛{p.get('bull')}" if given
+          else "没给概率" + (f"({r['no_probs_why']})" if r.get("no_probs_why") else ""))
+    print(f"   当时:价 {r.get('price')}　动作 **{r.get('action')}**"
+          f"（{norm_action(r.get('action'))}）　{ev}　{pr}")
+    if r.get("thesis"):
+        print(f"   判断:{r['thesis']}")
+    if r.get("falsify"):
+        print(f"   **判据:{r['falsify']}**　← 现在就核这条")
+    print()
+
+
+def _superseded_due(rows, today):
+    """到了复核日、还没核过的被取代旧版。
+
+    被取代只说明「同一天后来又出了新版」,不说明旧版没判断过 —— 早上那版和晚上那版
+    可能说得完全不一样,到期照样要对一遍。只是不算命中率(cmd_close 保留被取代状态)。
+    只列到期的,`--all` 也不例外:没到期的旧版有新版顶着,提前翻出来只会添乱。
+    """
+    return [r for r in rows
+            if r.get("status") == "superseded" and not r.get("outcome")
+            and (r.get("check_date") or "9999") <= today]
+
+
 def cmd_review(a):
     rows = _load(JOURNAL)
     today = dt.date.today().isoformat()
@@ -272,26 +303,26 @@ def cmd_review(a):
     due = [r for r in rows
            if r.get("status") == "open"
            and (a.all or (r.get("check_date") or "9999") <= today)]
+    old = _superseded_due(rows, today)
     if not due:
         n_open = sum(1 for r in rows if r.get("status") == "open")
-        print(f"没有到期待复核的记录（共 {n_open} 条未结）。"
-              f"想看全部未结:--all")
-        return
-    print(f"待复核 {len(due)} 条：\n")
-    for r in due:
-        p = r.get("probs") or {}     # 「不给动作」的记录 probs 是 None，不是空字典
-        print(f"── #{r['id']}　{r['code']}　记于 {r['logged_at'][:10]}　"
-              f"复核日 {r.get('check_date')}")
-        print(f"   当时:价 {r.get('price')}　动作 **{r.get('action')}**"
-              f"（{norm_action(r.get('action'))}）　EV {r.get('ev')}%　概率 "
-              f"熊{p.get('bear')}/中{p.get('base')}/牛{p.get('bull')}")
-        if r.get("thesis"):
-            print(f"   判断:{r['thesis']}")
-        if r.get("falsify"):
-            print(f"   **判据:{r['falsify']}**　← 现在就核这条")
-        print()
+        # 被取代的旧版到期了也要核:这时不能说「没有到期待复核」,下面紧接着就列出来了
+        head = "未结的记录里没有到期的" if old else "没有到期待复核的记录"
+        print(f"{head}（共 {n_open} 条未结）。想看全部未结:--all")
+        if not old:
+            return
+    else:
+        print(f"待复核 {len(due)} 条：\n")
+        for r in due:
+            _print_due(r)
+    if old:
+        print(f"\n被取代的旧版(照样到期核对) {len(old)} 条 —— 同一天后来又出了新版,"
+              f"这些旧版不算命中率,但当时也是一次判断,到期照样对一遍：\n")
+        for r in old:
+            _print_due(r)
     print("核完用:journal close <id> --outcome right|wrong|partial --note \"...\" "
-          "--actual-price <价> --bench-return <同期大盘涨跌%>")
+          "--actual-price <价> --bench-return <同期大盘涨跌%>"
+          + ("\n      (被取代的旧版结掉以后仍标「被取代」,不算命中率)" if old else ""))
 
 
 def cmd_exec(a):
@@ -307,7 +338,8 @@ def cmd_exec(a):
 
 
 def cmd_supersede(a):
-    """同一天改了几版，旧版标「被取代」:不进复核、不算命中率，但留在时间线里。"""
+    """同一天改了几版，旧版标「被取代」:不算命中率，但留在时间线里;
+    到了复核日 review 单独列出来照样核对(见 _superseded_due)。"""
     rows = _load(JOURNAL)
     old, new = _find(rows, a.id), _find(rows, a.by)
     if old.get("status") != "open":
@@ -341,9 +373,15 @@ def cmd_edit(a):
 def cmd_close(a):
     rows = _load(JOURNAL)
     r = _find(rows, a.id)
-    if r.get("status") != "open":
+    # 被取代的旧版也能核(review 会把到期的列出来),但结掉以后仍标「被取代」——
+    # stats 的命中率只数 status=closed,旧版一旦改成 closed 就混进去了,
+    # 同一天的同一个判断又被数成两次。结果照样记在这条上,时间线里看得到。
+    keep_superseded = r.get("status") == "superseded"
+    if r.get("outcome"):         # 核过一次了(被取代的旧版结掉以后状态不变,只能看 outcome):覆盖前说一声
+        print(f"⚠ #{a.id} 已经核过一次(结果 {r['outcome']},{str(r.get('closed_at') or '')[:10]}),本次覆盖")
+    elif r.get("status") not in ("open", "superseded"):
         print(f"⚠ #{a.id} 已经是 {r['status']} 状态，本次覆盖")
-    r["status"] = "closed"
+    r["status"] = "superseded" if keep_superseded else "closed"
     r["outcome"] = a.outcome
     r["closed_at"] = dt.datetime.now().isoformat(timespec="seconds")
     r["review_note"] = a.note
@@ -357,7 +395,8 @@ def cmd_close(a):
         if r.get("actual_return_pct") is not None:
             r["excess_pct"] = round(r["actual_return_pct"] - a.bench_return, 1)
     _save_all(JOURNAL, rows)
-    print(f"#{a.id} 已结:{a.outcome}")
+    print(f"#{a.id} 已结:{a.outcome}"
+          + ("(被取代的旧版:结果记下了,仍不算命中率)" if keep_superseded else ""))
     if r.get("actual_return_pct") is not None:
         print(f"  实际涨跌 {r['actual_return_pct']:+.1f}%　"
               f"（当时 EV 预期 {r.get('ev')}%）"
@@ -480,7 +519,8 @@ def cmd_stats(a):
             badge = {"right": "✅ 判对", "partial": "◐ 部分对",
                      "wrong": "❌ 判错"}.get(oc, "○ 待复核")
             if st == "superseded":
-                badge = f"↷ 被 #{r.get('superseded_by')} 取代"
+                badge = f"↷ 被 #{r.get('superseded_by')} 取代" + (
+                    f"(到期核过:{badge},不算命中率)" if oc else "")
             say(f"### #{r['id']}　{r['code']}　{badge}")
             say()
             say(f"{str(r.get('logged_at',''))[:10]} 记录　·　当时价 "
@@ -496,7 +536,7 @@ def cmd_stats(a):
                     + (f"，EV **{r['ev']:+.1f}%**" if r.get("ev") is not None else ""))
             if r.get("falsify"):
                 say(f"- **可证伪判据**：{r['falsify']}")
-            if st == "closed":
+            if st == "closed" or oc:
                 if r.get("actual_return_pct") is not None:
                     gap = r["actual_return_pct"] - (r.get("ev") or 0)
                     say(f"- **实际**：{r['actual_return_pct']:+.1f}%"

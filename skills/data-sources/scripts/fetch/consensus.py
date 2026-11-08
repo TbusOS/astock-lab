@@ -104,19 +104,25 @@ def sec_ratings(code, days):
     """评级变动:按天回看巨潮的全市场评级表,挑出本股。"""
     say(f"## 机构评级变动（巨潮，回看 {days} 天）")
     say()
-    rows = []
+    rows, failed = [], 0
     today = dt.date.today()
     for back in range(days):
         day = (today - dt.timedelta(days=back)).strftime("%Y%m%d")
         try:
             r = ak.stock_rank_forecast_cninfo(date=day)
         except Exception:
+            # 取数抛异常 ≠ 那天没有评级。分开数:同一小时里跑三次曾得到 9 / 1 / 0 家,
+            # 差别全在这里被吞掉的失败天(2026-11-02 实测)
+            failed += 1
             continue
         if r is None or not len(r) or "证券代码" not in r.columns:
             continue
         x = r[r["证券代码"].astype(str).str.zfill(6) == code]
         for _, y in x.iterrows():
             rows.append(y)
+    if failed:
+        say(f"巨潮评级:{failed} 天取数失败(这几天的评级没看到,家数可能偏少)")
+        say()
     if not rows:
         say(f"（回看 {days} 天没有找到 {code} 的评级记录 —— "
             f"可能是这段时间没有机构发研报，也可能巨潮当天数据缺失）")

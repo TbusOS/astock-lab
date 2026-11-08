@@ -46,6 +46,40 @@ run "3g 大盘层计算"       "$PY" "$LAB/tools/market.py" --self-test
 # 3h(2026-10-30):复核季度预测时只看「落在区间里」会两头看错 —— 第一次核三季度,
 # 5 只按区间只中 2 只,可 5 只偏中枢都不超过历史中位 12.7%。
 run "3h 季度预测评分"     "$PY" "$LAB/scripts/check_review_scoring.py"
+# 3i(2026-10-30):东财研报接口的「本年」EPS 不是发布年,年份要从 PDF 表头读,
+# 读错会把「换了年份」算成「上调 40%」。
+# (2026-11-02)上下调改比归母净利润:送转股后每股收益变小，看着像调低 28.8%,净利润其实没改。
+run "3i 研报盈利预测(年份、净利润)" "$PY" "$LAB/scripts/check_eps_revisions.py"
+# 3j~3y(2026-11-03):预测看板(skills/forecast-board)和它用到的取数改动。
+# 都不联网、不碰真实数据,在临时目录里搭工作台,用合成行情、合成答卷。
+# 3n~3p 管的是看板依赖的三处取数:腾讯日线缺整年、行业表的领先指标有没有取数器、
+# 云厂资本开支加上融资租赁 —— 这三处错了,看板照样出页面,只是数不对。
+run "3j 看板:统计底线、交易日、历史同类情形" "$PY" "$LAB/scripts/check_board_engine.py"
+run "3k 看板:输入包和事件"   "$PY" "$LAB/scripts/check_board_store.py"
+run "3l 看板:账户和动作"     "$PY" "$LAB/scripts/check_board_account.py"
+run "3m 看板:页面和图"       "$PY" "$LAB/scripts/check_board_pages.py"
+run "3n 日线不缺整年"         "$PY" "$LAB/scripts/check_market_fetch.py"
+run "3o 领先指标都有取数器或登记成缺口" "$PY" "$LAB/scripts/check_inputs_contract.py"
+run "3p 云厂资本开支(现金 + 融资租赁)" "$PY" "$LAB/scripts/check_capex_definition.py"
+run "3q 看板:board.py 各子命令" "$PY" "$LAB/scripts/check_board_cli.py"
+run "3r 看板:出题和结算"     "$PY" "$LAB/scripts/check_board_questions.py"
+run "3s 看板:原因概率和重跑" "$PY" "$LAB/scripts/check_board_review.py"
+run "3t 看板:评分和成绩页"   "$PY" "$LAB/scripts/check_board_scoring.py"
+run "3u 看板:结算记录、补记收盘价、错题证据" "$PY" "$LAB/scripts/check_board_settle.py"
+# 3v、3w 是从 3j、3k 拆出来的(文件超过 800 行),用例没变;3x、3y 是合并前最后一轮修的那批。
+run "3v 看板:系统算法"         "$PY" "$LAB/scripts/check_board_system.py"
+run "3w 看板:两个 AI 作答"     "$PY" "$LAB/scripts/check_board_ai.py"
+run "3x 看板:没取到、没查成、过期的写到页面上" "$PY" "$LAB/scripts/check_board_notices.py"
+run "3y 看板:页面上的字和数从哪来" "$PY" "$LAB/scripts/check_board_page_text.py"
+run "3z 看板:历史补考(不偷看、带子覆盖率)" "$PY" "$LAB/scripts/check_board_history.py"
+run "3z2 看板:按规则买卖补考(不偷看、已知答案、成本)" "$PY" "$LAB/scripts/check_board_rules.py"
+run "3z3 历史表:估值(公告后才用、分位只看以前)" "$PY" "$LAB/scripts/check_hist_valuation.py"
+run "3z4 历史表:海外同行(美股收盘次日才用)" "$PY" "$LAB/scripts/check_hist_overseas.py"
+run "3z5 历史表:云厂开支(按 SEC 提交日)" "$PY" "$LAB/scripts/check_hist_capex.py"
+run "3z6 历史表:A 股每季业绩(按首次公告日)" "$PY" "$LAB/scripts/check_hist_earnings.py"
+run "3z7 历史表:券商上调下调(按研报发布日)" "$PY" "$LAB/scripts/check_hist_consensus.py"
+run "3z8 逐条考想法的打分(含错开月份检验)" "$PY" "$LAB/scripts/check_board_thinking.py"
+run "3z9 看板第一屏(怎么看 / 价格可能晃多大 / 对照)" "$PY" "$LAB/scripts/check_board_judge.py"
 run "4 软链无断链"        bash -c '
   b=0
   for l in '"$LAB"'/tools/*; do [ -e "$l" ] || { echo "   断链 $l"; b=1; }; done
@@ -64,9 +98,9 @@ run "6 sh 语法"           bash -c '
   exit $b'
 
 if [ -n "${SKILL_MIRROR:-}" ]; then
-  run "7 skill 副本对账"  bash "$LAB/scripts/check_skill_sync.sh"
+  run "7 skill 几份副本一致"  bash "$LAB/scripts/check_skill_sync.sh"
 else
-  echo "── 7 skill 副本对账 ──"
+  echo "── 7 skill 几份副本一致 ──"
   echo "   ⏭  跳过(没设 SKILL_MIRROR;只在你另存了一份副本时才需要)"
   echo
 fi

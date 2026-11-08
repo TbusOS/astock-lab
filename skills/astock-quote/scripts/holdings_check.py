@@ -77,7 +77,12 @@ def fetch_pe_cap(code6: str):
 
 
 def valuation_percentile(code6: str, start="2020-01-01"):
-    """baostock 估值历史:返回当前 PE(TTM)/PB 及其历史分位。北交所不支持返回 None。"""
+    """baostock 估值历史:返回当前 PE(TTM)/PB 及其历史分位。北交所不支持返回 None。
+
+    返回 {"pe": (现值, 分位, 最低, 最高), "pb": 同上, "start": 第一天, "end": 最后一天};
+    分位 = 历史上比现值低的天数占比 × 100,是 0~100 的数(不是 0~1)。
+    预测看板(forecast-board/inputs.py)把这个函数的源码原样送到 mini 上跑,改它要跑
+    scripts/check_board_store.py。"""
     if code6[0] in ("4", "8") or code6[:2] == "92":
         return None
     mkt = "sh." if code6[0] == "6" else "sz."
@@ -106,6 +111,7 @@ def valuation_percentile(code6: str, start="2020-01-01"):
     if len(pb):
         out["pb"] = (pb.iloc[-1], (pb < pb.iloc[-1]).mean() * 100, pb.min(), pb.max())
     out["start"] = df["date"].iloc[0]
+    out["end"] = df["date"].iloc[-1]
     return out
 
 

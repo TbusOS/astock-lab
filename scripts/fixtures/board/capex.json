@@ -1,0 +1,257 @@
+{
+ "_note": "按 2026-11-02 在 mini 上跑 capex.py --quarters 8 --guidance --json 的输出改的;手工加了一个缺口(META 2025-03-31 融资租赁没取到),该季和 2026-03-31 的 yoy_total 照 capex.py 的规则置空",
+ "quarters": [
+  {
+   "q": "2024-12-31",
+   "by": {
+    "MSFT": {
+     "cash": 15.8,
+     "lease": 6.43,
+     "total": 22.24
+    },
+    "GOOGL": {
+     "cash": 14.28,
+     "lease": 0.0,
+     "total": 14.28
+    },
+    "AMZN": {
+     "cash": 27.83,
+     "lease": 0.0,
+     "total": 27.83
+    },
+    "META": {
+     "cash": 14.43,
+     "lease": 0.41,
+     "total": 14.84
+    }
+   },
+   "sum_cash": 72.34,
+   "sum_total": 79.19,
+   "yoy_cash": 68.2,
+   "yoy_total": 75.5
+  },
+  {
+   "q": "2025-03-31",
+   "by": {
+    "MSFT": {
+     "cash": 16.75,
+     "lease": 3.24,
+     "total": 19.99
+    },
+    "GOOGL": {
+     "cash": 17.2,
+     "lease": 0.0,
+     "total": 17.2
+    },
+    "AMZN": {
+     "cash": 25.02,
+     "lease": 0.0,
+     "total": 25.02
+    },
+    "META": {
+     "cash": 12.94,
+     "lease": 0.75,
+     "total": 13.69
+    }
+   },
+   "sum_cash": 71.9,
+   "sum_total": 75.89,
+   "yoy_cash": 62.3,
+   "yoy_total": null
+  },
+  {
+   "q": "2025-06-30",
+   "by": {
+    "MSFT": {
+     "cash": 17.08,
+     "lease": 6.5,
+     "total": 23.58
+    },
+    "GOOGL": {
+     "cash": 22.45,
+     "lease": 0.0,
+     "total": 22.45
+    },
+    "AMZN": {
+     "cash": 32.18,
+     "lease": 0.0,
+     "total": 32.18
+    },
+    "META": {
+     "cash": 16.54,
+     "lease": 0.47,
+     "total": 17.01
+    }
+   },
+   "sum_cash": 88.25,
+   "sum_total": 95.22,
+   "yoy_cash": 67.0,
+   "yoy_total": 64.6
+  },
+  {
+   "q": "2025-09-30",
+   "by": {
+    "MSFT": {
+     "cash": 19.39,
+     "lease": 9.15,
+     "total": 28.54
+    },
+    "GOOGL": {
+     "cash": 23.95,
+     "lease": 0.0,
+     "total": 23.95
+    },
+    "AMZN": {
+     "cash": 35.09,
+     "lease": 0.0,
+     "total": 35.09
+    },
+    "META": {
+     "cash": 18.83,
+     "lease": 0.55,
+     "total": 19.37
+    }
+   },
+   "sum_cash": 97.27,
+   "sum_total": 106.96,
+   "yoy_cash": 65.3,
+   "yoy_total": 66.8
+  },
+  {
+   "q": "2025-12-31",
+   "by": {
+    "MSFT": {
+     "cash": 29.88,
+     "lease": 6.33,
+     "total": 36.21
+    },
+    "GOOGL": {
+     "cash": 27.85,
+     "lease": 0.0,
+     "total": 27.85
+    },
+    "AMZN": {
+     "cash": 39.52,
+     "lease": 0.0,
+     "total": 39.52
+    },
+    "META": {
+     "cash": 21.38,
+     "lease": 0.75,
+     "total": 22.14
+    }
+   },
+   "sum_cash": 118.63,
+   "sum_total": 125.72,
+   "yoy_cash": 64.0,
+   "yoy_total": 58.8
+  },
+  {
+   "q": "2026-03-31",
+   "by": {
+    "MSFT": {
+     "cash": 30.88,
+     "lease": 4.01,
+     "total": 34.88
+    },
+    "GOOGL": {
+     "cash": 35.67,
+     "lease": 0.0,
+     "total": 35.67
+    },
+    "AMZN": {
+     "cash": 44.2,
+     "lease": 0.0,
+     "total": 44.2
+    },
+    "META": {
+     "cash": 19.0,
+     "lease": 0.84,
+     "total": 19.84
+    }
+   },
+   "sum_cash": 129.75,
+   "sum_total": 134.6,
+   "yoy_cash": 80.5,
+   "yoy_total": null
+  },
+  {
+   "q": "2026-06-30",
+   "by": {
+    "MSFT": {
+     "cash": 35.8,
+     "lease": 5.12,
+     "total": 40.92
+    },
+    "GOOGL": {
+     "cash": 44.92,
+     "lease": 0.0,
+     "total": 44.92
+    },
+    "AMZN": {
+     "cash": 54.21,
+     "lease": 0.0,
+     "total": 54.21
+    },
+    "META": {
+     "cash": 30.12,
+     "lease": 0.96,
+     "total": 31.08
+    }
+   },
+   "sum_cash": 165.05,
+   "sum_total": 171.13,
+   "yoy_cash": 87.0,
+   "yoy_total": 79.7
+  },
+  {
+   "q": "2026-09-30",
+   "by": {
+    "MSFT": {
+     "cash": 39.37,
+     "lease": 5.19,
+     "total": 44.56
+    },
+    "GOOGL": {
+     "cash": 51.35,
+     "lease": 0.0,
+     "total": 51.35
+    },
+    "AMZN": {
+     "cash": 77.26,
+     "lease": 0.0,
+     "total": 77.26
+    },
+    "META": {
+     "cash": 33.94,
+     "lease": 0.96,
+     "total": 34.91
+    }
+   },
+   "sum_cash": 201.92,
+   "sum_total": 208.08,
+   "yoy_cash": 107.6,
+   "yoy_total": 94.5
+  }
+ ],
+ "guidance": [
+  {
+   "ticker": "AMZN",
+   "date": "2026-10-29",
+   "text": "• We continue to expect 2026 cash capital expenditures to be approximately $220 billion."
+  },
+  {
+   "ticker": "META",
+   "date": "2026-10-21",
+   "text": "We anticipate 2026 capital expenditures, including principal payments on finance leases, to be in the range of $135-145 billion, narrowed from our prior outlook of $130-145 billion."
+  }
+ ],
+ "gaps": [
+  {
+   "ticker": "META",
+   "q": "2025-03-31",
+   "what": "lease"
+  }
+ ],
+ "failed": []
+}

@@ -1,7 +1,12 @@
 #!/usr/bin/env python3
 """check_review_scoring —— 复核季度预测时，「落在区间里」之外还要给中枢误差打分。
 
-用法:python3 scripts/check_review_scoring.py [--file <backtest.py>]   # 反向验证用旧版
+用法:python3 scripts/check_review_scoring.py [--module <backtest.py>]   # 反向验证用旧版
+      (--file 是 --module 的旧名字,两个都认)
+
+2026-11-02 加:决策日志里「不给动作」的旧记录没有期望值(ev 是 None),到了复核日、
+  拿到复核日的价以后,格式化 `{ev:+.1f}` 直接抛 TypeError,整份回测报告出不来。
+  这种记录照样要列出来,期望值那格写「—」。
 
 为什么有这道检查(2026-10-30):
   9/2 那 5 份三季度预测，按「落在区间里」只中 2 只，看着很差;可 5 只的营收中枢误差
@@ -31,9 +36,44 @@ def load(path: Path):
     return mod
 
 
+def _row(md, rid):
+    """回测报告第 2 节里 #rid 那一行,按 | 拆成格子(去掉首尾空格子)。"""
+    for ln in md.splitlines():
+        if ln.startswith(f"| #{rid} "):
+            return [c.strip() for c in ln.strip().strip("|").split("|")]
+    return None
+
+
+def check_no_ev(mod, ok):
+    """ev=None 的旧记录到了复核日:拿得到价、拿不到价两种情况都不抛异常,期望值写「—」。"""
+    legacy = {"logged_at": "2026-08-19T10:00:00", "price": 80.0, "action": "不给动作(检查用)",
+              "ev": None, "probs": None, "check_date": "2026-10-01", "status": "open"}
+    mod.load_predictions = lambda d: []
+    mod.load_journal = lambda p: [dict(legacy, id=41, code="000001"),
+                                  dict(legacy, id=42, code="000002")]
+    mod.price_on = lambda raw, code, on: ({"date": "2026-10-09", "close": 72.0}
+                                         if code == "000001" else None)
+    with tempfile.TemporaryDirectory() as d:
+        raw = Path(d) / "raw"
+        raw.mkdir()
+        try:
+            md, err = mod.build(raw, Path(d), today="2026-10-30"), None
+        except Exception as e:          # 旧版在这里抛 TypeError
+            md, err = "", f"{type(e).__name__}: {e}"
+    ok("ev=None 的旧记录拿到复核日的价 → 不抛异常", err is None, err)
+    r41, r42 = _row(md, 41), _row(md, 42)
+    # 列:# | 代码 | 记于 | 当时价 | 动作 | 当时的期望值 | 复核日的价 | 实际涨跌 | 差
+    ok("#41 期望值和差两格显示「—」,实际涨跌照样算(72/80 → -10.0%)",
+       r41 is not None and len(r41) == 9 and r41[5] == "—" and r41[8] == "—"
+       and "-10.0%" in r41[7], r41)
+    ok("#42 拿不到复核日的价时,期望值也写「—」不写 None%",
+       r42 is not None and len(r42) == 9 and r42[5] == "—", r42)
+
+
 def main():
     ap = argparse.ArgumentParser()
-    ap.add_argument("--file", type=Path, default=DEFAULT)
+    ap.add_argument("--module", "--file", dest="file", type=Path, default=DEFAULT,
+                    help="被测的 backtest.py(反向验证时指向旧版)")
     a = ap.parse_args()
     mod = load(a.file)
     fails = 0
@@ -75,6 +115,8 @@ def main():
     ok("108 不在 100~105 里、但只偏中枢 +5.9% → 判「中枢准、区间太窄」", "区间太窄" in md, md[:800])
     ok("汇总句写出偏中枢不超过历史中位的只数和参照值",
        "偏中枢不超过历史中位" in md and "12.7%" in md, md[:900])
+
+    check_no_ev(mod, ok)
 
     print("✅ 全过" if not fails else f"❌ {fails} 项不过")
     return 1 if fails else 0

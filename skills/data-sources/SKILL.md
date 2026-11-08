@@ -38,7 +38,9 @@ skills/data-sources/scripts/
 │   ├── efdata.py              东财报表类(股东户数/龙虎榜/全市场业绩)
 │   ├── consensus.py           一致预期 + 评级变动
 │   ├── research.py            券商研报(列表 + PDF 全文)
-│   ├── capex.py               SEC EDGAR XBRL 云厂/油服资本开支
+│   ├── capex.py               SEC EDGAR XBRL 云厂/油服资本开支(现金购建 + 融资租赁分开列;--json 给看板)
+│   ├── events.py              美股财报日历(纳斯达克,换北京时间)+ 云厂 SEC 新文件里「年份 + 资本开支」原句
+│   │                          (SEC 那半送到 mini 上跑;检查 scripts/check_board_store.py)
 │   ├── commodity.py           油价(新浪外盘期货)
 │   ├── rigcount.py            北美钻机数
 │   └── fx.py                  人民币中间价(CFETS)
@@ -65,6 +67,33 @@ $VENV/bin/python tools/fetch_all.py --transcripts <Motley Fool URL> ...
 # ③ 出文档:给人看的
 $VENV/bin/python tools/data_digest.py --code 300502 --overseas --pdf
 ```
+
+## 资本开支和财报日历(2026-11-02 起,预测看板也用)
+
+**资本开支(`capex.py`)每家每季三列**:`cash` 现金购建 · `lease` 融资租赁 · `total` = 两者相加。
+为什么加融资租赁:微软公布的资本开支含融资租赁,每年 200 多亿美元;只取现金购建,
+2025 日历年只有 831 亿,和公司自己公布的数对不上。同比按 `total` 算,`cash` 的同比另列。
+
+- 两家的 `lease` 不是同一种东西:微软取的是「融资租赁新增的使用权资产」(不花现金),
+  Meta 取的是「付出去的融资租赁本金」(花现金);其余公司 SEC 里没有单列,记 0。
+- 有融资租赁的公司某季租赁数缺了(填 0)时,那一季和下一年同一季的 `yoy_total` 置空,不拿缺数去算同比。
+- `--json` 给别的脚本读,顶层四个键:`quarters`(每季每家三列、合计、两种同比)、`guidance`(加 `--guidance` 才有)、
+  `gaps`(租赁缺数被填 0 的季度)、`failed`(请求了没取到的公司和原因)。
+  退出码:0 全部正常;1 一家都没取到;2 有公司失败但至少一家成功。
+- 检查:`scripts/check_capex_definition.py`(读 `scripts/fixtures/board/` 里的 XBRL 样例,不联网)。
+
+**财报日历和 SEC 新文件(`events.py`)**:
+
+```bash
+events calendar --days 14                 # 关注名单未来 14 天的美股财报,换成北京时间的早上 / 晚上
+events sec --since 2026-10-15             # 几家云厂这之后交给 SEC 的文件,摘出「年份 + 资本开支」的原句
+events sec --since 2026-10-15 --here      # 本机能连 SEC 时在本机跑;默认 ssh 到 --host(默认 mini)那台去跑
+```
+
+为什么要有:`capex.py` 只读季度数字和 8-K 新闻稿里的指引,10-Q 正文里「下一年资本开支会明显增加」
+这种句子它读不到。摘句只认「年份 + capital expenditure / capex / property and equipment」同在一句,
+写成别的说法(例如 technology infrastructure assets)的摘不到,要人看。
+检查:`scripts/check_board_store.py` 的 events 那一块(不联网)。
 
 ## 落盘结构
 

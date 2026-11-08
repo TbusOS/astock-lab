@@ -90,12 +90,14 @@ alias hcheck='$VENV/bin/python $LAB/tools/holdings_check.py'
 alias preport='$VENV/bin/python $LAB/tools/position_report.py'
 alias capex='$VENV/bin/python $LAB/tools/capex.py'
 alias consensus='$VENV/bin/python $LAB/tools/consensus.py'
+alias events='$VENV/bin/python $LAB/tools/events.py'
 alias baserate='$VENV/bin/python $LAB/tools/baserate.py'
 alias journal='$VENV/bin/python $LAB/tools/journal.py'
 alias research='$VENV/bin/python $LAB/tools/research.py'
 alias sectors='$VENV/bin/python $LAB/tools/sectors.py'
 alias dreport='$VENV/bin/python $LAB/tools/deep_report.py'
 alias probe_sources='$VENV/bin/python $LAB/tools/probe_sources.py'
+alias board='$VENV/bin/python $LAB/tools/board.py'
 ALIASEOF
 echo "  ✅ $LAB/aliases.sh"
 echo "     source $LAB/aliases.sh        # 本次会话生效"

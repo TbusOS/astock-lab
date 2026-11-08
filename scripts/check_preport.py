@@ -1,7 +1,14 @@
 #!/usr/bin/env python3
 """check_preport —— preport 两个不联网就能查的毛病。
 
-用法:python3 scripts/check_preport.py [--file <position_report.py>]   # 反向验证用旧版
+用法:python3 scripts/check_preport.py [--module <position_report.py>]   # 反向验证用旧版
+      (--file 是 --module 的旧名字,两个都认)
+      [--deep-report <deep_report.py>]                                   # 读快照的那一头
+
+③ 快照不再覆盖(2026-11-02,做预测看板前):
+   原来快照叫 `<日期>.json`,同一天重跑就把当天那份盖掉 —— 早上那次看到的数没了。
+   改成 `<日期>_<时分>.json`,同一分钟再跑加 `_2`。读的两头(preport 找上一份、
+   deep_report 按日期找)都要同时认新旧两种名字。
 
 ① 动态 PE 按报告期折全年(2026-10-29 晚发现):
    原来不看报告期，一律「最新累计净利 × 2」当全年。三季报出来以后，它把 9 个月的累计
@@ -15,15 +22,20 @@
 """
 import argparse
 import importlib.util
+import json
 import sys
+import tempfile
+import time
+import types
 from pathlib import Path
 
 HERE = Path(__file__).resolve().parent
 DEFAULT = HERE.parent / "skills" / "astock-quote" / "scripts" / "position_report.py"
+DEFAULT_DR = HERE.parent / "skills" / "finance-pdf-report" / "scripts" / "deep_report.py"
 
 
-def load(path):
-    spec = importlib.util.spec_from_file_location("pr_under_test", path)
+def load(path, name="pr_under_test"):
+    spec = importlib.util.spec_from_file_location(name, path)
     mod = importlib.util.module_from_spec(spec)
     argv, sys.argv = sys.argv, [sys.argv[0]]
     try:
@@ -52,6 +64,86 @@ def check_annualize(mod, ok):
         got = rows[idx][1] if len(rows) > idx else None
         ok(name, got is not None and abs(got - want) < 0.05, got)
     ok("报告期不明 → 不出表，不猜", fn(100.0, "") == [], fn(100.0, ""))
+
+
+def _put(d, name):
+    (d / name).write_text(json.dumps({"tag": name}), encoding="utf-8")
+
+
+def check_snapshots(mod, ok):
+    """快照:同一天写两次留两份;找上一份时新旧两种文件名都认,只看日期在今天之前的。"""
+    need = [n for n in ("snapshot_dir", "write_snapshot", "load_prev_snapshot") if not hasattr(mod, n)]
+    if need:
+        ok("有快照读写函数", False, f"缺 {need}")
+        return
+    real_dir, real_time = mod.snapshot_dir, mod.time
+    with tempfile.TemporaryDirectory() as d:
+        root = Path(d)
+        mod.snapshot_dir = lambda code: root / code
+        try:
+            a = root / "AAA"
+            a.mkdir()
+            for n in ("2026-08-14.json", "2026-11-02_0930.json", "2026-11-02_1500.json"):
+                _put(a, n)
+            got = mod.load_prev_snapshot("AAA", "2026-11-02")
+            ok("今天之前最近的一份:新旧名字混放时取到 2026-08-14.json",
+               (got or {}).get("tag") == "2026-08-14.json", got)
+            for n in ("2026-10-15_0930.json", "2026-10-15_1500.json"):
+                _put(a, n)
+            got = mod.load_prev_snapshot("AAA", "2026-11-02")
+            ok("同一天有几份时取最晚那份(2026-10-15_1500)",
+               (got or {}).get("tag") == "2026-10-15_1500.json", got)
+
+            # 钟固定在同一分钟,连写两次 —— 第二次不许盖掉第一次
+            fixed = time.strptime("2026-11-02 09:30:15", "%Y-%m-%d %H:%M:%S")
+            mod.time = types.SimpleNamespace(strftime=lambda fmt, t=None: time.strftime(fmt, fixed))
+            f1 = mod.write_snapshot("BBB", "测试", None)
+            f2 = mod.write_snapshot("BBB", "测试", None)
+            files = sorted(p.name for p in (root / "BBB").glob("*.json"))
+            ok("同一天(同一分钟)连写两次 → 2 个文件", len(files) == 2, files)
+            ok("文件名是 <日期>_<时分>", bool(files) and files[0] == "2026-11-02_0930.json", files)
+            ok("write_snapshot 返回两个不同的文件", f1 is not None and f1 != f2, (f1, f2))
+            got = mod.load_prev_snapshot("BBB", "2026-11-03")
+            ok("第二天找上一份 → 取到同一分钟里后写的那份",
+               f2 is not None and (got or {}).get("ts") == "2026-11-02 09:30"
+               and json.loads(Path(f2).read_text(encoding="utf-8")) == got, got)
+        finally:
+            mod.snapshot_dir, mod.time = real_dir, real_time
+
+
+def check_deep_report_snapshots(dr, ok):
+    """deep_report 按日期找快照:`--date 2026-11-02` 要能找到 `2026-11-02_HHMM.json`。"""
+    if not hasattr(dr, "load_snapshot"):
+        ok("deep_report 有 load_snapshot", False, "没有这个函数")
+        return
+    real = dr.SNAPDIR
+    with tempfile.TemporaryDirectory() as d:
+        dr.SNAPDIR = Path(d)
+        try:
+            a = Path(d) / "AAA"
+            a.mkdir()
+            for n in ("2026-08-14.json", "2026-11-02_0930.json", "2026-11-02_1500.json"):
+                _put(a, n)
+
+            def tag(*args):
+                try:
+                    snap, f = dr.load_snapshot("AAA", *args)
+                except SystemExit as e:
+                    return f"SystemExit: {e}"
+                return (snap or {}).get("tag")
+
+            ok("deep_report 不给日期 → 最新一份", tag() == "2026-11-02_1500.json", tag())
+            ok("deep_report --date 2026-11-02 → 那天最晚的一份",
+               tag("2026-11-02") == "2026-11-02_1500.json", tag("2026-11-02"))
+            ok("deep_report --date 2026-08-14 → 老名字照样认",
+               tag("2026-08-14") == "2026-08-14.json", tag("2026-08-14"))
+            ok("deep_report --date 写完整文件名 → 就是那一份",
+               tag("2026-11-02_0930") == "2026-11-02_0930.json", tag("2026-11-02_0930"))
+            ok("deep_report 那天没有快照 → 报错并列出已有的",
+               str(tag("2026-10-01")).startswith("SystemExit") and "2026-08-14" in str(tag("2026-10-01")),
+               tag("2026-10-01"))
+        finally:
+            dr.SNAPDIR = real
 
 
 def check_two_holdings(mod, ok):
@@ -96,7 +188,10 @@ def check_two_holdings(mod, ok):
 
 def main():
     ap = argparse.ArgumentParser()
-    ap.add_argument("--file", type=Path, default=DEFAULT)
+    ap.add_argument("--module", "--file", dest="file", type=Path, default=DEFAULT,
+                    help="被测的 position_report.py(反向验证时指向旧版)")
+    ap.add_argument("--deep-report", dest="deep_report", type=Path, default=DEFAULT_DR,
+                    help="被测的 deep_report.py(反向验证时指向旧版)")
     a = ap.parse_args()
     mod = load(a.file)
     fails = 0
@@ -108,7 +203,10 @@ def main():
 
     print(f"== preport 不联网检查:{a.file}")
     check_annualize(mod, ok)
+    check_snapshots(mod, ok)          # 要在 check_two_holdings 之前:那边会把快照函数换成替身
     check_two_holdings(mod, ok)
+    print(f"== deep_report 读快照:{a.deep_report}")
+    check_deep_report_snapshots(load(a.deep_report, "dr_under_test"), ok)
     print("✅ 全过" if not fails else f"❌ {fails} 项不过")
     return 1 if fails else 0
 

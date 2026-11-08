@@ -23,7 +23,7 @@
   把已有的判断排进版式。所以 `journal log` 没记的票，这里出不了报告，这是有意的。
 
 数据来源（都在本机，不联网）:
-    data/snapshots/<代码>/<日期>.json   ← preport 每跑一次自动落的证据层
+    data/snapshots/<代码>/<日期>_<时分>.json ← preport 每跑一次另存一份的证据层(老的叫 <日期>.json)
     data/journal.jsonl                  ← journal log 记的决策层
 """
 
@@ -85,19 +85,38 @@ def ET(t):
 # ══════════════════════════════════════════════════════════════════════════
 # 读数据
 # ══════════════════════════════════════════════════════════════════════════
+# 快照文件名:老的 `YYYY-MM-DD`(一天一份);2026-11-02 起 preport 每跑一次另存
+# `YYYY-MM-DD_HHMM`,同一分钟再跑加 `_2`。跟 position_report.snap_sort_key 是同一条规则 ——
+# 跨 skill 不 import,两边各写一份,scripts/check_preport.py 拿同一组文件名查两边。
+_SNAP_NAME = r"(\d{4}-\d{2}-\d{2})(?:_(\d{4})(?:_(\d+))?)?"
+
+
+def _snap_key(stem):
+    """快照文件名(不带 .json)→ (日期, 时分, 序号);不是快照文件名返回 None。"""
+    import re
+    m = re.fullmatch(_SNAP_NAME, stem)
+    if not m:
+        return None
+    return m.group(1), m.group(2) or "", int(m.group(3) or 1)
+
+
 def load_snapshot(code, date=None):
+    """取一份快照。不给 date 取最新一份;date 写日期(2026-11-02)取那天最晚的一份,
+    写完整文件名(2026-11-02_1500)就取那一份。"""
     d = SNAPDIR / code
     if not d.is_dir():
         return None, None
-    files = sorted(d.glob("*.json"))
+    files = sorted((f for f in d.glob("*.json") if _snap_key(f.stem)),
+                   key=lambda f: _snap_key(f.stem))
     if not files:
         return None, None
     if date:
-        want = d / f"{date}.json"
-        if not want.exists():
+        hit = ([f for f in files if f.stem == date]
+               or [f for f in files if _snap_key(f.stem)[0] == date])
+        if not hit:
             have = ", ".join(f.stem for f in files)
             raise SystemExit(f"没有 {code} 在 {date} 的快照。已有:{have}")
-        f = want
+        f = hit[-1]
     else:
         f = files[-1]
     return json.loads(f.read_text(encoding="utf-8")), f
@@ -939,7 +958,8 @@ def main():
     ap = argparse.ArgumentParser(
         description="把快照 + journal 渲染成给人看的深度分析报告（不联网）")
     ap.add_argument("code", help="股票代码，如 300308")
-    ap.add_argument("--date", help="用哪一天的快照（默认最新）")
+    ap.add_argument("--date", help="用哪一天的快照（默认最新）;同一天有几份时取最晚那份,"
+                                   "要指定某一份就写完整文件名,如 2026-11-02_1500")
     ap.add_argument("--out", help="输出 HTML 路径（默认打到 stdout）")
     ap.add_argument("--tolerance", type=float, metavar="PCT",
                     default=(float(os.environ["ASTOCK_DD_TOLERANCE"])

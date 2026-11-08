@@ -6,6 +6,27 @@
     $P $LAB/tools/capex.py                    # 四大云厂,最近 8 季
     $P ... --tickers MSFT,GOOGL,AMZN,META,ORCL,CRWV --quarters 12
     $P ... --md ~/capex.md
+    $P ... --json                             # 只输出 JSON(给别的脚本读),不打 markdown
+
+算法(2026-11-02 起):每家每季三列
+    cash   现金购建(PaymentsToAcquirePropertyPlantAndEquipment,亚马逊用 PaymentsToAcquireProductiveAssets)
+    lease  融资租赁:微软取「融资租赁新增资产」(RightOfUseAssetObtainedInExchangeForFinanceLeaseLiability),
+           Meta 取「融资租赁本金」(FinanceLeasePrincipalPayments);其余公司 SEC 里没有单列,记 0
+    total  = cash + lease
+    为什么加这一列:微软公布的资本开支含融资租赁,每年 200 多亿美元;只取现金购建,
+    2025 日历年只有 831 亿,和公司公布的口径对不上。同比按 total 算,cash 的同比另列。
+    注意:公司公布值和 SEC 能取到的数之间仍可能对不上(微软尤其),以 SEC 数为准、不硬凑。
+    两家的 lease 含义不同:微软是**非现金**的融资租赁新增使用权资产(ROU),
+    Meta 是**现金**付出去的融资租赁本金。所以 total 不是「同一种东西」的加总。
+
+--json 输出(顶层四个键):
+    quarters  每季每家 cash / lease / total、sum_cash / sum_total、yoy_cash / yoy_total
+    guidance  指引句(只在加 --guidance 时有内容)
+    gaps      有融资租赁标签的公司、某季租赁数缺失被填成 0 的清单;
+              这些季度和它的下一年同季,yoy_total 置 null(yoy_cash 不受影响)
+    failed    请求了但没取到的公司(含指引抓取失败),带原因
+    sum_* 只加总取到数的公司,缺的公司看 failed。
+    退出码:0 全部正常;1 一家都没取到;2 有公司取失败但至少一家成功。
 
 为什么要看这个(这是本脚本存在的理由):
     A 股光模块 / 服务器 / 液冷这条链,收入来自北美超大规模云厂的数据中心投资。
@@ -74,6 +95,13 @@ TAG_CANDIDATES = [
     "PaymentsToAcquirePropertyPlantAndEquipment",
     "PaymentsToAcquireProductiveAssets",
 ]
+# 融资租赁标签:只有这两家在 SEC 里单列了;其余公司 lease 记 0
+LEASE_TAGS = {
+    "MSFT": "RightOfUseAssetObtainedInExchangeForFinanceLeaseLiability",
+    "META": "FinanceLeasePrincipalPayments",
+}
+LEASE_DESC = {"MSFT": "融资租赁新增资产", "META": "融资租赁本金"}
+NO_LEASE_NOTE = "此公司无单列融资租赁"
 DEFAULT_TICKERS = ["MSFT", "GOOGL", "AMZN", "META"]
 
 # 中文名,输出好读
@@ -83,11 +111,19 @@ CN = {"MSFT": "微软", "GOOGL": "谷歌", "AMZN": "亚马逊", "META": "Meta",
 
 _OUT = []
 _last_req = [0.0]
+_QUIET = [False]      # --json 时只输出 JSON,markdown 不往屏幕打
 
 
 def say(s=""):
-    print(s)
+    if not _QUIET[0]:
+        print(s)
     _OUT.append(s)
+
+
+def warn(s):
+    """失败 / 警告行:屏幕静音(--json)时也要让人看见,走 stderr。"""
+    if _QUIET[0]:
+        print(s, file=sys.stderr)
 
 
 def _get(url):
@@ -153,23 +189,38 @@ def _to_quarters(records):
     return derived
 
 
-def fetch_capex(cik):
-    """逐个试标签,返回单季 dict + 用了哪个标签。"""
+def _concept_records(d):
+    """companyconcept 的 JSON → [(start, end, val)],去重。"""
+    recs, seen = [], set()
+    for x in d.get("units", {}).get("USD", []):
+        s, e, v = x.get("start"), x.get("end"), x.get("val")
+        if not (s and e and v is not None) or (s, e) in seen:
+            continue
+        seen.add((s, e))
+        recs.append((s, e, v))
+    return recs
+
+
+def _concept_url(cik, tag):
+    return (f"https://data.sec.gov/api/xbrl/companyconcept/"
+            f"CIK{cik}/us-gaap/{tag}.json")
+
+
+def fetch_capex(cik, ticker=None, get=None):
+    """逐个试标签,返回现金购建单季 dict + 融资租赁单季 dict。
+
+    get 是取数函数(默认 _get),检查脚本传假的进来读 fixture。
+    返回 {"q": 现金购建, "lease": 融资租赁, "tag", "lease_tag", "name", "latest"}。
+    ticker 在 LEASE_TAGS 里时,融资租赁取不到会直接报错 —— 悄悄记 0 会把合计压低。
+    """
+    get = get or _get
     best = None
     for tag in TAG_CANDIDATES:
         try:
-            d = _get(f"https://data.sec.gov/api/xbrl/companyconcept/"
-                     f"CIK{cik}/us-gaap/{tag}.json")
+            d = get(_concept_url(cik, tag))
         except Exception:
             continue
-        recs, seen = [], set()
-        for x in d.get("units", {}).get("USD", []):
-            s, e, v = x.get("start"), x.get("end"), x.get("val")
-            if not (s and e and v is not None) or (s, e) in seen:
-                continue
-            seen.add((s, e))
-            recs.append((s, e, v))
-        q = _to_quarters(recs)
+        q = _to_quarters(_concept_records(d))
         if not q:
             continue
         latest = max(q)
@@ -178,6 +229,17 @@ def fetch_capex(cik):
                     "tag": tag, "latest": latest}
     if best is None:
         raise RuntimeError("所有候选标签都没有可用数据")
+    best["lease"], best["lease_tag"] = {}, None
+    ltag = LEASE_TAGS.get((ticker or "").upper())
+    if ltag:
+        try:
+            dl = get(_concept_url(cik, ltag))
+        except Exception as e:
+            raise RuntimeError(f"融资租赁标签 {ltag} 取数失败:{type(e).__name__}") from e
+        lease = _to_quarters(_concept_records(dl))
+        if not lease:
+            raise RuntimeError(f"融资租赁标签 {ltag} 没有可用数据")
+        best["lease"], best["lease_tag"] = lease, ltag
     return best
 
 
@@ -192,11 +254,9 @@ def fetch_capex_edgartools(ticker):
     set_identity(UA)
     c = Company(ticker)
     df = c.get_facts().to_dataframe()
-    best = None
-    for tag in TAG_CANDIDATES:
+
+    def quarters_of(tag):
         h = df[df["concept"] == f"us-gaap:{tag}"]
-        if not len(h):
-            continue
         recs, seen = [], set()
         for _, x in h.iterrows():
             st, en, v = x.get("period_start"), x.get("period_end"), x.get("numeric_value")
@@ -207,7 +267,11 @@ def fetch_capex_edgartools(ticker):
                 continue
             seen.add((st, en))
             recs.append((st, en, float(v)))
-        q = _to_quarters(recs)
+        return _to_quarters(recs)
+
+    best = None
+    for tag in TAG_CANDIDATES:
+        q = quarters_of(tag)
         if not q:
             continue
         latest = max(q)
@@ -215,6 +279,13 @@ def fetch_capex_edgartools(ticker):
             best = {"q": q, "name": c.name, "tag": tag, "latest": latest}
     if best is None:
         raise RuntimeError("edgartools:没有可用的 Capex 标签")
+    best["lease"], best["lease_tag"] = {}, None
+    ltag = LEASE_TAGS.get(ticker.upper())
+    if ltag:
+        lease = quarters_of(ltag)
+        if not lease:
+            raise RuntimeError(f"edgartools:融资租赁标签 {ltag} 没有可用数据")
+        best["lease"], best["lease_tag"] = lease, ltag
     return best
 
 
@@ -285,22 +356,155 @@ def fetch_guidance(ticker, look_back=6):
     return None
 
 
-def quarters_sorted(data, n):
-    return sorted(data["q"].items())[-n:]
+def _pct(cur, base):
+    return (cur / base - 1) * 100 if base else None
 
 
-def yoy(data, end):
-    """同比:找 365±20 天前的那一季。"""
+def _yoy_in(series, end, bad=()):
+    """同比:在 {end: 值} 里找 365±20 天前的那一季。
+    bad 是「数据有缺口」的季度集合:本季或基期在里面,同比不可信,返回 None。"""
+    if end in bad:
+        return None
     e = date.fromisoformat(end)
-    for e2, v2 in data["q"].items():
+    for e2, v2 in series.items():
         if 345 <= (e - date.fromisoformat(e2)).days <= 385:
-            cur = data["q"][end]
-            if v2:
-                return (cur / v2 - 1) * 100
+            return None if e2 in bad else _pct(series[end], v2)
     return None
 
 
-def main():
+def company_rows(d, n):
+    """一家公司最近 n 季,每季 cash / lease / total(单位美元)和两个同比(百分数)。
+
+    lease_gap=True 表示这家有融资租赁标签、但这一季没取到数,按 0 计 —— 表里会标 *。
+    """
+    totals = {e: v + d["lease"].get(e, 0.0) for e, v in d["q"].items()}
+    gaps = {e for e in d["q"] if d["lease_tag"] and e not in d["lease"]}
+    rows = []
+    for e, cash in sorted(d["q"].items())[-n:]:
+        lease = d["lease"].get(e, 0.0)
+        rows.append({"q": e, "cash": cash, "lease": lease, "total": cash + lease,
+                     "yoy_total": _yoy_in(totals, e, gaps), "yoy_cash": _yoy_in(d["q"], e),
+                     "lease_gap": bool(d["lease_tag"]) and e not in d["lease"]})
+    return rows
+
+
+def _fmt_pct(y, bold=False):
+    if y is None:
+        return "—"
+    return f"**{y:+.1f}%**" if bold else f"{y:+.1f}%"
+
+
+def company_md_lines(tk, cn, name, cik, d, n):
+    """一家公司的 markdown 小节(行列表)。表头写清这家的算法。"""
+    out = [f"## {cn}（{tk}）", ""]
+    out.append(f"{name}　·　CIK {cik}　·　现金购建标签 `{d['tag']}`")
+    out.append("")
+    if d["lease_tag"]:
+        out.append(f"> 算法：合计 = 现金购建 + {LEASE_DESC.get(tk, '融资租赁')}"
+                   f"（标签 `{d['lease_tag']}`）。同比按合计算，现金购建的同比另列。")
+    else:
+        out.append(f"> {NO_LEASE_NOTE}（SEC 里没有这一项），融资租赁记 0，"
+                   f"合计 = 现金购建。")
+    out.append("")
+    out.append("| 季度截止 | 现金购建 | 融资租赁 | 合计 | 合计同比 | 现金同比 |")
+    out.append("|---|---|---|---|---|---|")
+    rows = company_rows(d, n)
+    gap = False
+    for r in rows:
+        lease = f"{r['lease']/1e9:.2f} B" + ("*" if r["lease_gap"] else "")
+        gap = gap or r["lease_gap"]
+        out.append(f"| {r['q']} | {r['cash']/1e9:.2f} B | {lease} | "
+                   f"**{r['total']/1e9:.2f} B** | {_fmt_pct(r['yoy_total'], True)} | "
+                   f"{_fmt_pct(r['yoy_cash'])} |")
+    out.append("")
+    if gap:
+        out.append("> * 这一季没取到融资租赁数，按 0 计，合计偏低。")
+        out.append("")
+    if len(rows) >= 2:
+        trend = [r["yoy_total"] for r in rows[-4:] if r["yoy_total"] is not None]
+        if len(trend) >= 2:
+            if trend[-1] > trend[0]:
+                out.append(f"> 合计同比增速从 {trend[0]:+.0f}% 抬到 {trend[-1]:+.0f}% —— **在加速**。")
+            elif trend[-1] < trend[0]:
+                out.append(f"> 合计同比增速从 {trend[0]:+.0f}% 落到 {trend[-1]:+.0f}% —— **在减速**。")
+            else:
+                out.append("> 合计同比增速大体走平。")
+            out.append("")
+    return out
+
+
+def _nearest_end(d, e):
+    """各家财季末不同,取 ±45 天内最近的一季,返回那一季的 end;没有返回 None。"""
+    best, bd = None, 999
+    for e2 in d["q"]:
+        gap = abs((date.fromisoformat(e) - date.fromisoformat(e2)).days)
+        if gap < bd and gap <= 45:
+            best, bd = e2, gap
+    return best
+
+
+def combined_rows(allq, n):
+    """多家合计。返回最近 n 个「每家都有数」的季度,单位美元:
+    {q, by:{tk:{cash,lease,total}}, sum_cash, sum_total, yoy_cash, yoy_total}。
+    合计的同比要拿到基期,所以多算 5 个季度,只返回最后 n 个。
+    """
+    if not allq:
+        return []
+    all_ends = sorted({e for d in allq.values() for e in d["q"]})
+    ends = all_ends[-(n + 5):]
+    sums_cash, sums_total, rows, gap_ends = {}, {}, [], set()
+    for e in ends:
+        by, gaps = {}, []
+        for tk, d in allq.items():
+            e2 = _nearest_end(d, e)
+            if e2 is None:
+                break
+            cash, lease = d["q"][e2], d["lease"].get(e2, 0.0)
+            by[tk] = {"cash": cash, "lease": lease, "total": cash + lease}
+            if d["lease_tag"] and e2 not in d["lease"]:
+                gaps.append(tk)       # 租赁这一季没取到,上面按 0 填了
+        if len(by) != len(allq):
+            continue
+        if gaps:
+            gap_ends.add(e)
+        sc = sum(v["cash"] for v in by.values())
+        st = sum(v["total"] for v in by.values())
+        sums_cash[e], sums_total[e] = sc, st
+        rows.append({"q": e, "by": by, "sum_cash": sc, "sum_total": st,
+                     "yoy_cash": _yoy_in(sums_cash, e),
+                     "yoy_total": _yoy_in(sums_total, e, gap_ends),
+                     "gaps": gaps})
+    return rows[-n:]
+
+
+def _b(v):
+    return round(v / 1e9, 2)
+
+
+def _p(v):
+    return None if v is None else round(v, 1)
+
+
+def build_json(allq, n, guide, failed=None):
+    """--json 的输出。数字:十亿美元保留 2 位小数,同比百分数保留 1 位。
+    guide = {ticker: {"date", "hits": [句子]}},没抓指引就传 {}。
+    failed = [{"ticker", "why"}],请求了但没取到的公司。"""
+    quarters, gaps = [], []
+    for r in combined_rows(allq, n):
+        gaps.extend({"ticker": tk, "q": r["q"], "what": "lease"} for tk in r["gaps"])
+        quarters.append({
+            "q": r["q"],
+            "by": {tk: {k: _b(x) for k, x in v.items()} for tk, v in r["by"].items()},
+            "sum_cash": _b(r["sum_cash"]), "sum_total": _b(r["sum_total"]),
+            "yoy_cash": _p(r["yoy_cash"]), "yoy_total": _p(r["yoy_total"]),
+        })
+    guidance = [{"ticker": tk, "date": g["date"], "text": h}
+                for tk, g in guide.items() for h in g["hits"]]
+    return {"quarters": quarters, "guidance": guidance,
+            "gaps": gaps, "failed": list(failed or [])}
+
+
+def main(argv=None):
     p = argparse.ArgumentParser(
         prog="capex",
         description="从 SEC EDGAR 拉北美云厂 Capex —— A 股算力链的需求源头")
@@ -314,7 +518,13 @@ def main():
     p.add_argument("--engine", choices=["raw", "edgartools", "both"], default="raw",
                    help="取数引擎:raw=自写(默认,零依赖) / edgartools=用库 / "
                         "both=两个都跑并比对")
-    a = p.parse_args()
+    p.add_argument("--json", action="store_true",
+                   help="只输出 JSON 到屏幕(现金购建 / 融资租赁 / 合计三列,给别的脚本读);"
+                        "--md 照样可以同时存")
+    a = p.parse_args(argv)
+    _QUIET[0] = a.json
+    del _OUT[:]
+    failed = []
 
     tickers = [t.strip().upper() for t in a.tickers.split(",") if t.strip()]
 
@@ -322,7 +532,13 @@ def main():
     say()
     say(f"> 生成时间 {time.strftime('%Y-%m-%d %H:%M')}　·　"
         f"数据源 SEC EDGAR XBRL（官方，免费）")
-    say("> 单季口径：直报的单季直接用；只报年初至今累计的（如谷歌），"
+    say("> 算法：每家每季三列 —— 现金购建；融资租赁（微软取融资租赁新增资产，"
+        "Meta 取融资租赁本金，其余公司 SEC 里没有单列，记 0）；合计 = 现金购建 + 融资租赁。"
+        "同比按合计算，现金购建的同比另列。")
+    say("> 为什么要加融资租赁：微软公布的资本开支含融资租赁，每年 200 多亿美元，"
+        "只看现金购建会少算一截。公司公布值和 SEC 能取到的数之间仍可能对不上"
+        "（微软尤其），这里以 SEC 数为准。")
+    say("> 单季取法：直报的单季直接用；只报年初至今累计的（如谷歌），"
         "按 start 分组后相邻相减倒推。各家标签见下方各节。")
     say()
     if UA == DEFAULT_UA:
@@ -334,6 +550,10 @@ def main():
         ciks = load_ciks(tickers)
     except Exception as e:
         print(f"取 CIK 失败：{type(e).__name__}: {e}", file=sys.stderr)
+        if a.json:
+            why = f"取 CIK 失败 {type(e).__name__}: {str(e)[:60]}"
+            fl = [{"ticker": t, "why": why} for t in tickers]
+            print(json.dumps(build_json({}, a.quarters, {}, fl), ensure_ascii=False))
         if isinstance(e, urllib.error.HTTPError) and e.code == 403:
             print("403 通常是 User-Agent 不合规 —— SEC 要求带联系方式。"
                   "设 SEC_UA 环境变量。", file=sys.stderr)
@@ -344,12 +564,14 @@ def main():
         if tk not in ciks:
             say(f"（{tk}：在 SEC 代码表里没找到，跳过）")
             say()
+            warn(f"{tk}：在 SEC 代码表里没找到，跳过")
+            failed.append({"ticker": tk, "why": "在 SEC 代码表里没找到"})
             continue
         cik, name = ciks[tk]
         d = None
         try:
             if a.engine in ("raw", "both"):
-                d = fetch_capex(cik)
+                d = fetch_capex(cik, ticker=tk)
             if a.engine in ("edgartools", "both"):
                 et = fetch_capex_edgartools(tk)
                 if a.engine == "edgartools":
@@ -371,75 +593,36 @@ def main():
                             f"（{len(d['q'])} 个季度）")
                         say()
         except Exception as e:
-            say(f"（{tk}：取数失败 {type(e).__name__}: {str(e)[:60]}）")
+            why = f"{type(e).__name__}: {str(e)[:60]}"
+            say(f"（{tk}：取数失败 {why}）")
             say()
+            warn(f"{tk}：取数失败 {why}")
+            failed.append({"ticker": tk, "why": why})
             continue
         if d is None:
             continue
         allq[tk] = d
-        qs = quarters_sorted(d, a.quarters)
-        say(f"## {CN.get(tk, tk)}（{tk}）")
-        say()
-        say(f"{name}　·　CIK {cik}　·　标签 `{d['tag']}`")
-        say()
-        say("| 季度截止 | Capex | 同比 |")
-        say("|---|---|---|")
-        for e, v in qs:
-            y = yoy(d, e)
-            ys = f"**{y:+.1f}%**" if y is not None else "—"
-            say(f"| {e} | {v/1e9:.2f} B | {ys} |")
-        say()
-        if len(qs) >= 2:
-            trend = [yoy(d, e) for e, _ in qs[-4:]]
-            trend = [t for t in trend if t is not None]
-            if len(trend) >= 2:
-                if trend[-1] > trend[0]:
-                    say(f"> 同比增速从 {trend[0]:+.0f}% 抬到 {trend[-1]:+.0f}% —— **在加速**。")
-                elif trend[-1] < trend[0]:
-                    say(f"> 同比增速从 {trend[0]:+.0f}% 落到 {trend[-1]:+.0f}% —— **在减速**。")
-                else:
-                    say("> 同比增速大体走平。")
-                say()
+        for line in company_md_lines(tk, CN.get(tk, tk), name, cik, d, a.quarters):
+            say(line)
 
     # 合计
     if len(allq) >= 2:
         say("## 合计")
         say()
-        # 合计的同比要拿到基期,所以多算 5 个季度,只显示最后 a.quarters 个
-        all_ends = sorted({e for d in allq.values() for e in d["q"]})
-        ends = all_ends[-(a.quarters + 5):]
-        show_from = len(ends) - a.quarters
-        say("| 季度截止 | " + " | ".join(CN.get(t, t) for t in allq) + " | 合计 | 同比 |")
-        say("|---|" + "---|" * (len(allq) + 2))
-        tot = {}
-        for idx, e in enumerate(ends):
-            vals, cells = [], []
-            for tk, d in allq.items():
-                # 各家财季末不同,取 ±45 天内最近的一季
-                best, bd = None, 999
-                for e2, v2 in d["q"].items():
-                    gap = abs((date.fromisoformat(e) - date.fromisoformat(e2)).days)
-                    if gap < bd and gap <= 45:
-                        best, bd = v2, gap
-                if best is not None:
-                    vals.append(best)
-                    cells.append(f"{best/1e9:.1f}")
-                else:
-                    cells.append("—")
-            if len(vals) == len(allq):
-                s = sum(vals)
-                tot[e] = s
-                prev = None
-                for e2, v2 in tot.items():
-                    g = (date.fromisoformat(e) - date.fromisoformat(e2)).days
-                    if 345 <= g <= 385:
-                        prev = v2
-                ys = f"**{(s/prev-1)*100:+.1f}%**" if prev else "—"
-                if idx >= show_from:      # 前 5 个季度只用来当同比基期,不显示
-                    say(f"| {e} | " + " | ".join(cells)
-                        + f" | **{s/1e9:.1f} B** | {ys} |")
+        say("四家各列的是「合计」（现金购建 + 融资租赁，单位十亿美元）；"
+            "右边另给只算现金购建的合计，方便和旧数字对照。")
+        say()
+        say("| 季度截止 | " + " | ".join(CN.get(t, t) for t in allq)
+            + " | 现金合计 | 含租赁合计 | 含租赁同比 | 现金同比 |")
+        say("|---|" + "---|" * (len(allq) + 4))
+        for r in combined_rows(allq, a.quarters):
+            cells = [f"{r['by'][tk]['total']/1e9:.1f}" for tk in allq]
+            say(f"| {r['q']} | " + " | ".join(cells)
+                + f" | {r['sum_cash']/1e9:.1f} B | **{r['sum_total']/1e9:.1f} B** | "
+                + f"{_fmt_pct(r['yoy_total'], True)} | {_fmt_pct(r['yoy_cash'])} |")
         say()
 
+    guide_map = {}
     if a.guidance:
         say("## 下期指引（8-K 新闻稿原文）")
         say()
@@ -454,9 +637,13 @@ def main():
                 g = fetch_guidance(tk)
             except Exception as e:
                 say(f"- **{CN.get(tk, tk)}（{tk}）**：抓取失败 {type(e).__name__}")
+                warn(f"{tk}：指引抓取失败 {type(e).__name__}")
+                failed.append({"ticker": tk,
+                               "why": f"guidance: {type(e).__name__}: {str(e)[:60]}"})
                 continue
             if g:
                 any_hit = True
+                guide_map[tk] = g
                 say(f"- **{CN.get(tk, tk)}（{tk}）**　8-K {g['date']}")
                 for h in g["hits"]:
                     say(f"  > {h}")
@@ -489,8 +676,16 @@ def main():
     if a.md:
         Path(a.md).parent.mkdir(parents=True, exist_ok=True)
         Path(a.md).write_text("\n".join(_OUT) + "\n", encoding="utf-8")
-        print(f"\n已写入 {a.md}")
-    return 0
+        print(f"\n已写入 {a.md}", file=sys.stderr if a.json else sys.stdout)
+    out = build_json(allq, a.quarters, guide_map, failed)
+    for g in out["gaps"]:
+        print(f"警告：{g['ticker']} {g['q']} 融资租赁没取到，按 0 计"
+              f"（该季和下一年同季的合计同比置空）", file=sys.stderr)
+    if a.json:
+        print(json.dumps(out, ensure_ascii=False))
+    if not allq:
+        return 1
+    return 2 if failed else 0
 
 
 if __name__ == "__main__":

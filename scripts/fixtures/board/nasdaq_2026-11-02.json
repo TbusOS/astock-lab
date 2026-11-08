@@ -1,0 +1,68 @@
+{
+ "data": {
+  "asOf": "Mon, Nov 2, 2026",
+  "headers": {
+   "time": "Time",
+   "symbol": "Symbol",
+   "name": "Company Name",
+   "marketCap": "Market Cap",
+   "fiscalQuarterEnding": "Fiscal Quarter Ending",
+   "epsForecast": "Consensus EPS* Forecast",
+   "noOfEsts": "# of Ests",
+   "lastYearRptDt": "Last Year's Report Date",
+   "lastYearEPS": "Last year's EPS*"
+  },
+  "rows": [
+   {
+    "lastYearRptDt": "10/30/2025",
+    "lastYearEPS": "$1.85",
+    "time": "time-after-hours",
+    "symbol": "AAPL",
+    "name": "Apple Inc.",
+    "marketCap": "$5,092,055,400,000",
+    "fiscalQuarterEnding": "Sep/2026",
+    "epsForecast": "$1.98",
+    "noOfEsts": "7"
+   },
+   {
+    "lastYearRptDt": "11/04/2025",
+    "lastYearEPS": "$2.47",
+    "time": "time-pre-market",
+    "symbol": "MAR",
+    "name": "Marriott International",
+    "marketCap": "$104,215,249,000",
+    "fiscalQuarterEnding": "Sep/2026",
+    "epsForecast": "$2.87",
+    "noOfEsts": "8"
+   },
+   {
+    "lastYearRptDt": "11/03/2025",
+    "lastYearEPS": "$2.67",
+    "time": "time-after-hours",
+    "symbol": "FN",
+    "name": "Fabrinet",
+    "marketCap": "$12,494,553,100",
+    "fiscalQuarterEnding": "Sep/2026",
+    "epsForecast": "$3.88",
+    "noOfEsts": "3"
+   },
+   {
+    "lastYearRptDt": "10/27/2025",
+    "lastYearEPS": "$0.94",
+    "time": "time-not-supplied",
+    "symbol": "PKX",
+    "name": "POSCO HOLDINGS INC.",
+    "marketCap": "$16,481,186,800",
+    "fiscalQuarterEnding": "Sep/2026",
+    "epsForecast": "$1.29",
+    "noOfEsts": "1"
+   }
+  ]
+ },
+ "message": null,
+ "status": {
+  "rCode": 200,
+  "bCodeMessage": null,
+  "developerMessage": null
+ }
+}

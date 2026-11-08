@@ -51,20 +51,40 @@ def _get_json(url, params=None):
         return json.loads(r.read().decode("utf-8"))
 
 
+def _is_index(sym):
+    """指数代码:创业板指 sz399xxx、上证系 sh000xxx。"""
+    return sym.startswith(("sz399", "sh000"))
+
+
 def fetch_daily(sym, start, end=None, fq=""):
-    """腾讯日线 [(日期, 收盘)]。单次最多约 2000 根，按 5 年一段取。
+    """腾讯日线 [(日期, 收盘)]。fq 取 "" / "qfq" / "hfq"(不复权 / 前复权 / 后复权)。
+    腾讯每次最多回约 640 根(前复权、后复权都一样),所以按两年一段取;
+    一次取 5 年只会回最后 640 根,前面整年静默丢失(2026-11-02 实测)。
+    复权键缺失/为空时:个股若同一响应里有不复权 day 数据,抛 ValueError(不能顶替,
+    结算比较会错);day 也没有就当这段没数据(上市前),继续取下一段;
+    指数(sz399xxx / sh000xxx)本来就没有复权,腾讯在 fq=qfq 时只回 day(2026-11-02
+    本机实测 sz399006),此时读 day。ETF 实测回 qfqday,按个股处理。
     只能走 https —— http 回 302(2026-10-29 本机实测)。"""
     end = end or dt.date.today().isoformat()
+    key = {"qfq": "qfqday", "hfq": "hfqday"}.get(fq, "day")
     out, y0 = [], int(start[:4])
     while y0 <= int(end[:4]):
         s = max(start, f"{y0}-01-01")
-        e = min(end, f"{y0 + 4}-12-31")
+        e = min(end, f"{y0 + 1}-12-31")
         d = _get_json("https://web.ifzq.gtimg.cn/appstock/app/fqkline/get",
-                      {"param": f"{sym},day,{s},{e},2000,{fq}"})["data"]
+                      {"param": f"{sym},day,{s},{e},640,{fq}"})["data"]
         if isinstance(d, dict):
-            k = d[sym].get("qfqday") or d[sym].get("day") or []
+            bars = d.get(sym) or {}
+            k = bars.get(key) or []
+            if not k and key != "day":
+                day = bars.get("day") or []
+                if day and not _is_index(sym):
+                    # 有不复权数据却没有复权数据:最危险的情况,不能顶替
+                    raise ValueError(f"{sym} 没有 {fq} 日线(缺 {key}),"
+                                     "不用不复权数据顶替")
+                k = day   # 指数不复权,复权前后相同;都空 = 这段没数据(上市前)
             out += [(x[0], float(x[2])) for x in k]
-        y0 += 5
+        y0 += 2
     seen, uniq = set(), []
     for x in out:
         if x[0] not in seen:

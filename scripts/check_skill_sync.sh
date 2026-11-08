@@ -32,8 +32,12 @@ echo "   本仓:$LAB/skills"
 echo "   镜像:$MIRROR"
 echo
 
+# 要对的 skill:有人另存副本的那几个。新加的 skill、改过的 skill 要登记进来,不然它漂了这里也不报。
+SKILLS="astock-quote stock-analysis-workflow finance-pdf-report data-sources forecast-from-facts forecast-board"
+n_skills=$(echo $SKILLS | wc -w | tr -d ' ')
+
 diffs=0
-for k in astock-quote stock-analysis-workflow finance-pdf-report; do
+for k in $SKILLS; do
   a="$LAB/skills/$k"; b="$MIRROR/$k"
   if [ ! -d "$b" ]; then
     printf "  ❌ %-26s 镜像里没有\n" "$k"; diffs=$((diffs+1)); continue
@@ -58,4 +62,4 @@ if [ "$diffs" -gt 0 ]; then
   echo "           $LAB/skills/<名>/ $MIRROR/<名>/"
   exit 1
 fi
-echo "✅ 三个 skill 两份逐字节一致。"
+echo "✅ $n_skills 个 skill 两份逐字节一致。"

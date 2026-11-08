@@ -258,18 +258,21 @@ def build(raw: Path, pred_dir: Path, today: str | None = None) -> str:
                  "| 实际涨跌 | 差 |")
         L.append("|---|---|---|---:|---|---:|---:|---:|---:|")
         for r in due:
+            # 「不给动作」的旧记录没有期望值(ev 是 None):照样列出来,期望值和差写「—」,
+            # 不能拿 None 去格式化 —— 那会抛异常,整份回测报告都出不来(2026-11-02)。
+            ev = r.get("ev")
+            ev_s = "—" if ev is None else f"{ev:+.1f}%"
             px = price_on(raw, r["code"], r["check_date"])
             if not px or not r.get("price"):
                 L.append(f"| #{r['id']} | {r['code']} | {r['logged_at'][:10]} "
-                         f"| {r.get('price')} | {r.get('action')} | {r.get('ev')}% "
+                         f"| {r.get('price')} | {r.get('action')} | {ev_s} "
                          f"| **拿不到复核日的价** | — | — |")
                 continue
             real = (px["close"] / r["price"] - 1) * 100
-            ev = r.get("ev")
             L.append(f"| #{r['id']} | {r['code']} | {r['logged_at'][:10]} "
-                     f"| {r['price']:,.2f} | {r.get('action')} | {ev:+.1f}% "
+                     f"| {r['price']:,.2f} | {r.get('action')} | {ev_s} "
                      f"| {px['close']:,.2f}({px['date']}) | **{real:+.1f}%** "
-                     f"| {real - ev:+.1f}pp |")
+                     f"| {'—' if ev is None else f'{real - ev:+.1f}pp'} |")
         L.append("")
         L.append("⚠ **「实际涨跌」是复核日那一天的价,不是这段时间的最好或最差价。** "
                  "期望值说的就是「到复核日为止平均能赚多少」,所以要拿那一天的价比。"

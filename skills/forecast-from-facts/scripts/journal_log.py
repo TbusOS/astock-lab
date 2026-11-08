@@ -19,14 +19,18 @@ thesis / falsify / check_date / status。**不另造一套** ——
 那边的 `journal review` / `journal close` 读的就是这个结构,
 另造一套等于这些记录复核工具认不出来。
 
-## 同一天同一票只留一条
+## 同一天同一票只算一条,但旧条不删
 
 重跑报告是常事(改了一行文案就重跑)。每跑一次追加一条,journal 里
-同一天同一只票会有五条一模一样的记录,**而复核工具会把它们当成五次独立判断**——
-统计准确率时同一个判断被数了五遍。所以写之前先删掉当天同代码的旧条。
+同一天同一只票会有五条记录,**而复核工具会把它们当成五次独立判断**——
+统计准确率时同一个判断被数了五遍。所以写新条时,把当天同代码还开着的旧条
+标成「被取代」(`status=superseded`、`superseded_by=<新条编号>`)。
 
-⚠ **只删当天的。** 昨天那条是昨天的判断,今天改主意了不代表昨天没判断过 ——
-删掉历史记录等于把自己的错误抹掉,那正是这个文件要防的事。
+⚠ **标记,不删。** 原来这里是直接删掉当天旧条(2026-11-02 改):可旧版当时也是
+一次判断,早上那版和晚上那版说的可能完全不一样,删了就再也核不到早上说过什么。
+被取代的旧条不算命中率,但到了复核日照样列出来对一遍(`journal review`)。
+昨天的记录一律不动 —— 昨天那条是昨天的判断,今天改主意了不代表昨天没判断过。
+预测看板记的那条(thesis 以「预测存档」开头)也不动:它不是这份报告写的,存档那边指着它的编号。
 
 ## 路径从 `--raw` 推,不猜
 
@@ -42,6 +46,8 @@ from __future__ import annotations
 import datetime as dt
 import json
 from pathlib import Path
+
+BOARD_MARK = "预测存档"     # 预测看板(forecast-board 的 archive.link_journal)写的那条,thesis 以它开头
 
 
 def journal_path(raw: Path) -> Path:
@@ -152,12 +158,23 @@ def write(raw: Path, code: str, a: dict, f: dict, position: dict,
     p = journal_path(raw)
     rows = load(p)
     day = today or dt.date.today().isoformat()
-    # 同一天同一票只留一条:先删当天的旧条,**只删当天的**
-    kept = [r for r in rows
-            if not (r.get("code") == code
-                    and str(r.get("logged_at", ""))[:10] == day)]
-    dropped = len(rows) - len(kept)
     rid = max([r.get("id", 0) for r in rows], default=0) + 1
+    # 同一天同一票只算一条:当天还开着的旧条标「被取代」、指向新条,**不删**。
+    # 已经被取代过的、已经结掉的不再动 —— 它们指向谁、结论是什么,当时已经定了。
+    now = dt.datetime.now().isoformat(timespec="seconds")
+
+    # 预测看板(archive.link_journal)记的那条不是这份报告写的,不归它取代:它指向一次预测存档,
+    # 同一天出报告就把它标成「同日重出报告」,存档那边指过来的编号就成了被取代的记录。
+    def same_day_open(r):
+        return (r.get("code") == code and r.get("status") == "open"
+                and str(r.get("logged_at", ""))[:10] == day
+                and not str(r.get("thesis") or "").startswith(BOARD_MARK))
+
+    replaced = sum(1 for r in rows if same_day_open(r))
+    rows = [dict(r, status="superseded", superseded_by=rid,
+                 superseded_at=now, superseded_note="同日重出报告")
+            if same_day_open(r) else r
+            for r in rows]
 
     # ⚠ **不给动作的记录也要有价。** 那条记录记的是「这一天我们看了它,
     #   而且决定不给动作」—— 没有当时的价,下次回来连「那天它多少钱」都答不上来。
@@ -174,7 +191,7 @@ def write(raw: Path, code: str, a: dict, f: dict, position: dict,
 
     rec = {
         "id": rid,
-        "logged_at": dt.datetime.now().isoformat(timespec="seconds"),
+        "logged_at": now,
         "code": code,
         "price": spot,
         "cost": position.get("cost"),
@@ -196,8 +213,8 @@ def write(raw: Path, code: str, a: dict, f: dict, position: dict,
         "executed": None,
         "status": "open",
     }
-    save(p, kept + [rec])
-    rec["_覆盖了当天旧条数"] = dropped
+    save(p, rows + [rec])
+    rec["_取代了当天旧条数"] = replaced
     rec["_文件"] = str(p)
     return rec
 
@@ -207,9 +224,10 @@ def render(rec: dict, n: str, L: list) -> None:
     L.append(f"### {n} 这次的判断已经记进决策日志")
     L.append("")
     L.append(f"写进 `{rec['_文件']}` 第 **#{rec['id']}** 条"
-             + (f"(覆盖了当天同一只票的 {rec['_覆盖了当天旧条数']} 条旧记录 —— "
-                f"**同一天同一票只留一条**,否则同一个判断会被统计成好几次)"
-                if rec["_覆盖了当天旧条数"] else "")
+             + (f"(当天同一只票之前的 {rec['_取代了当天旧条数']} 条记录已标为「被取代」—— "
+                f"**同一天同一票只算一条**,否则同一个判断会被统计成好几次;"
+                f"旧条留在文件里,到了复核日照样列出来对一遍,只是不算命中率)"
+                if rec["_取代了当天旧条数"] else "")
              + "。")
     L.append("")
     L.append("| 字段 | 值 |")

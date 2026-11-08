@@ -1039,17 +1039,37 @@ def snapshot_dir(code):
     return _lab_root() / "data" / SNAP_DIR_NAME / code
 
 
+# 快照文件名。老的是 `YYYY-MM-DD`(一天一份,重跑覆盖);2026-11-02 起是
+# `YYYY-MM-DD_HHMM`,同一分钟再跑加 `_2`、`_3`。读的时候两种都认,别的文件名不当快照。
+_SNAP_NAME = r"(\d{4}-\d{2}-\d{2})(?:_(\d{4})(?:_(\d+))?)?"
+
+
+def snap_sort_key(stem):
+    """快照文件名(不带 .json)→ (日期, 时分, 序号);不是快照文件名返回 None。
+
+    老名字没有时分,排在同一天的新名字前面。序号按数字比,`_10` 排在 `_2` 后面。
+    """
+    import re
+    m = re.fullmatch(_SNAP_NAME, stem)
+    if not m:
+        return None
+    return m.group(1), m.group(2) or "", int(m.group(3) or 1)
+
+
 def write_snapshot(code, name, cost, jr=None):
-    """落一份结构化快照。同一天重跑覆盖当天那份。
+    """落一份结构化快照。**每跑一次另存一份,不覆盖。**
+
+    文件名 `<日期>_<时分>.json`;同一分钟里再跑,加 `_2`、`_3`。原来是 `<日期>.json`,
+    同一天重跑就把当天那份盖掉 —— 早上那次看到的数、当时的推理全没了(2026-11-02 改)。
 
     ★ 快照里**同时存事实和当时的推理**。只存事实的话,下次回来只能看到
       「数变了」,看不到「我上次凭什么这么判断」—— 那样没法分辨
       「推理错了」和「世界变了」,而自我进化要改的恰恰是前者。
     """
     import json
+    ts = time.strftime("%Y-%m-%d %H:%M")      # 只读一次钟:文件名、date、ts 三处一致
     _SNAP.update({"code": code, "name": name, "cost": cost,
-                  "date": time.strftime("%Y-%m-%d"),
-                  "ts": time.strftime("%Y-%m-%d %H:%M")})
+                  "date": ts[:10], "ts": ts})
     if jr:
         _SNAP["reasoning"] = {
             "journal_id": jr.get("id"),
@@ -1062,26 +1082,40 @@ def write_snapshot(code, name, cost, jr=None):
             "check_date": jr.get("check_date"),
         }
     d = snapshot_dir(code)
+    base = f"{ts[:10]}_{ts[11:13]}{ts[14:16]}"
+    text = json.dumps(_SNAP, ensure_ascii=False, indent=2)
     try:
         d.mkdir(parents=True, exist_ok=True)
-        f = d / f"{_SNAP['date']}.json"
-        f.write_text(json.dumps(_SNAP, ensure_ascii=False, indent=2), encoding="utf-8")
-        return f
+        for n in range(1, 1000):
+            f = d / (f"{base}.json" if n == 1 else f"{base}_{n}.json")
+            try:
+                # "x" = 文件已存在就报错:哪怕两个进程同时跑,也不会盖掉别人刚写的那份
+                with f.open("x", encoding="utf-8") as fh:
+                    fh.write(text)
+                return f
+            except FileExistsError:
+                continue
+        return None
     except OSError:
         return None
 
 
 def load_prev_snapshot(code, today):
-    """取**今天之前**最近的一份。同一天重跑不该跟自己比。"""
+    """取**今天之前**最近的一份。同一天重跑不该跟自己比。
+
+    新旧两种文件名都认(见 snap_sort_key),按文件名里的日期判断「今天之前」,
+    同一天有几份时取最晚的那份。别的 .json 不当快照读。
+    """
     import json
     d = snapshot_dir(code)
     if not d.is_dir():
         return None
-    fs = sorted(f for f in d.glob("*.json") if f.stem < today)
-    if not fs:
+    keyed = [(k, f) for f in d.glob("*.json")
+             if (k := snap_sort_key(f.stem)) is not None and k[0] < today]
+    if not keyed:
         return None
     try:
-        return json.loads(fs[-1].read_text(encoding="utf-8"))
+        return json.loads(max(keyed)[1].read_text(encoding="utf-8"))
     except (OSError, ValueError):
         return None
 
