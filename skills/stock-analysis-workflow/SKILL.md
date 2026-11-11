@@ -530,6 +530,7 @@ journal stats --html kb.html       # 出给人看的视图
 | **`capex --guidance`** | **云厂自己给的下期指引(最领先)** | `capex --guidance` |
 | **`consensus`** | **券商一致预期 + 评级变动(领先指标)** | `consensus 300502 --days 30` |
 | **`market`** | **大盘(60 日线 + 融资余额)· 同行背离 · 回测** | `market regime` · `market peer 300308 300502` · `market backtest` |
+| **`swing`** | **做波段看的原始数:美股同行隔夜 · 每次反弹涨了多少 · 个股融资余额 · 当日大单** | `swing all 300308 300502` · `swing us` · `swing rebound 300308` |
 | **`events`** | **美股财报日历(换北京时间)· 云厂 SEC 新文件里「年份 + 资本开支」的原句** | `events calendar --days 14` · `events sec --since 2026-10-15` |
 | **`board`** | **预测看板:3 个月 / 半年 / 一年带概率的预测(涨的概率、分位价、见底、买点),冻结存档、到期结算** | `board inputs --check 300502` · `board forecast` · `board resolve` |
 | **`journal`** | **决策记录与复核(自我进化)** | `journal log ...` / `review` / `close` / `exec` / `supersede` / `stats` |
@@ -550,10 +551,28 @@ capex --guidance --md capex.md               # ① 需求源头 + 下期指引(�
 consensus 300502 --md cons.md                # ①b 一致预期与评级变动
 preport 300502:400.00 --md pos.md           # ②③④⑤ 一次跑完(第 8 层自带基准率)
 # 消息面靠 WebSearch 补:订单/砍单/产业进展
+swing all <代码...>                           # 问「反弹到哪卖 / 做波段」时加这一步(见下)
 journal log 300502 --price ... --action ... --falsify "..." \
         --bear-px ... --base-px ... --bull-px ...              # ⑦ 记一笔（含情景价位）
 dreport 300502 --tolerance 30 --out 报告.html                  # ⑧ 出给人看的那份
 ```
+
+### 问「反弹到哪卖 / 做波段」时:`swing`
+
+`swing all <代码...>` 一次出四样,都是原始数,不含任何人的观点:
+
+| 子命令 | 回答什么 |
+|---|---|
+| `swing us` | 美股光通信 / 芯片同行最近一个交易日和 5 日、20 日涨跌。美股某天的收盘影响 A 股下一个交易日的开盘;美股还没收盘时跑,会标「盘中」 |
+| `swing rebound <代码>` | 一年最高收盘以来,每次反弹(收盘涨 8% 以上)涨了多少、持续几天;这一次超过了以前几次;按以前的中位 / 最大幅度换算成价位 |
+| `swing margin <代码>` | 个股融资余额近 5 日、20 日的变化,离一年高点多远 —— 借钱买的人走了多少 |
+| `swing flow <代码>` | 当天特大单 / 大单净流入(东财的算法,只有最新一天) |
+
+怎么用:卖点先看 `rebound` 换算出的两个价位,再用 `us` 和 `margin` 判断这一次会不会和以前不一样。
+
+**边界:** `rebound` 数的是过去。下跌趋势里反弹结束后多数会再创新低
+(2026-06~11 这轮,中际旭创、新易盛各 7 次里 6 次),趋势反转的那一次照它做会卖早。
+所以它只回答「分批卖在哪」,不回答「要不要全卖」—— 后者仍按第 2 节的五层。
 
 ---
 

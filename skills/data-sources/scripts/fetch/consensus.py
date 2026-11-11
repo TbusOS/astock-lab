@@ -42,6 +42,8 @@ import socket  # noqa: E402
 socket.setdefaulttimeout(float(os.environ.get("ASTOCK_SOCKET_TIMEOUT", "30")))
 
 import argparse  # noqa: E402
+import threading  # noqa: E402
+import time  # noqa: E402
 import datetime as dt  # noqa: E402
 from pathlib import Path  # noqa: E402
 
@@ -52,7 +54,7 @@ _OUT = []
 
 
 def say(s=""):
-    print(s)
+    print(s, flush=True)
     _OUT.append(s)
 
 
@@ -100,16 +102,112 @@ def sec_forecast(code):
     return got
 
 
+RATING_BUDGET = float(os.environ.get("ASTOCK_RATING_BUDGET", "60"))
+RATING_PER_CALL = 15.0
+
+
+def _with_deadline(fn, secs):
+    """在后台线程里跑 fn,超过 secs 秒就抛 TimeoutError。
+
+    socket 超时管不住「对端一小块一小块慢慢发」:每块都在超时内,整次请求却没有尽头。
+    """
+    box = {}
+
+    def run():
+        try:
+            box["v"] = fn()
+        except Exception as e:  # noqa: BLE001
+            box["e"] = e
+
+    t = threading.Thread(target=run, daemon=True)
+    t.start()
+    t.join(secs)
+    if t.is_alive():
+        raise TimeoutError(f"超过 {secs:.0f} 秒")
+    if "e" in box:
+        raise box["e"]
+    return box.get("v")
+
+
+def rating_direction(now, last):
+    """两次评级文字 → "调高" / "调低" / "维持" / "首次" / "看不出"。"""
+    if not now:
+        return "看不出"
+    if not last:
+        return "首次"
+    a, b = RANK_SCORE.get(now), RANK_SCORE.get(last)
+    if a is None or b is None:
+        return "维持" if now == last else "看不出"
+    return "调高" if a > b else "调低" if a < b else "维持"
+
+
+def fetch_em_ratings(code, days):
+    """东财研报列表里的评级:[(日期, 机构, 本次评级, 上次评级)]。一次请求,几秒。"""
+    import json
+    import urllib.parse
+    import urllib.request
+    end = dt.date.today()
+    q = {"industryCode": "*", "pageSize": "100", "industry": "*", "rating": "*",
+         "ratingChange": "*", "beginTime": str(end - dt.timedelta(days=days)),
+         "endTime": str(end), "pageNo": "1", "fields": "", "qType": "0",
+         "orgCode": "", "code": code, "rcode": ""}
+    url = "https://reportapi.eastmoney.com/report/list?" + urllib.parse.urlencode(q)
+    req = urllib.request.Request(url, headers={"User-Agent": "Mozilla/5.0"})
+    with urllib.request.urlopen(req, timeout=20) as r:
+        j = json.loads(r.read().decode("utf-8"))
+    return [((it.get("publishDate") or "")[:10], it.get("orgSName") or "",
+             it.get("emRatingName") or "", it.get("lastEmRatingName") or "")
+            for it in j.get("data") or []]
+
+
+def sec_ratings_em(code, days):
+    """评级变动第二来源:东财研报。巨潮慢或缺天时,这张表照样有。"""
+    say(f"## 机构评级变动（东财研报，回看 {days} 天）")
+    say()
+    try:
+        rows = _with_deadline(lambda: fetch_em_ratings(code, days), 30)
+    except Exception as e:  # noqa: BLE001
+        say(f"（取数失败:{type(e).__name__} —— 不是没有研报，是这次没取到）")
+        say()
+        return
+    if not rows:
+        say(f"（回看 {days} 天东财没有 {code} 的研报）")
+        say()
+        return
+    cnt = {}
+    say("| 发布日期 | 机构 | 评级 | 上次 | 方向 |")
+    say("|---|---|---|---|---|")
+    for d, org, now, last in rows:
+        way = rating_direction(now, last)
+        cnt[way] = cnt.get(way, 0) + 1
+        say(f"| {d} | {org} | {now or '—'} | {last or '—'} | {way} |")
+    say()
+    say(f"- 共 **{len(rows)}** 篇　·　调高 **{cnt.get('调高', 0)}**　·　维持 **{cnt.get('维持', 0)}**"
+        f"　·　**调低 {cnt.get('调低', 0)}**　·　首次 {cnt.get('首次', 0)}　·　看不出 {cnt.get('看不出', 0)}")
+    say()
+    say("> 方向是拿本次和上次的评级文字比出来的。评级是券商的观点，不是事实;"
+        "境内券商很少下调，「零下调」不能当成没有风险。")
+    say()
+
+
 def sec_ratings(code, days):
     """评级变动:按天回看巨潮的全市场评级表,挑出本股。"""
     say(f"## 机构评级变动（巨潮，回看 {days} 天）")
     say()
-    rows, failed = [], 0
+    rows, failed, skipped = [], 0, 0
     today = dt.date.today()
+    t0 = time.monotonic()
     for back in range(days):
         day = (today - dt.timedelta(days=back)).strftime("%Y%m%d")
+        left = RATING_BUDGET - (time.monotonic() - t0)
+        if left <= 0:
+            # 巨潮一天一个请求,慢的时候 30 天要跑好几分钟还不出结果(2026-11-11 实测)。
+            # 到时间就停,把没看的天数说出来,后面还有东财研报那张表补。
+            skipped = days - back
+            break
         try:
-            r = ak.stock_rank_forecast_cninfo(date=day)
+            r = _with_deadline(lambda: ak.stock_rank_forecast_cninfo(date=day),
+                               min(left, RATING_PER_CALL))
         except Exception:
             # 取数抛异常 ≠ 那天没有评级。分开数:同一小时里跑三次曾得到 9 / 1 / 0 家,
             # 差别全在这里被吞掉的失败天(2026-11-02 实测)
@@ -122,6 +220,10 @@ def sec_ratings(code, days):
             rows.append(y)
     if failed:
         say(f"巨潮评级:{failed} 天取数失败(这几天的评级没看到,家数可能偏少)")
+        say()
+    if skipped:
+        say(f"巨潮评级:到 {RATING_BUDGET:.0f} 秒上限停了,最早的 {skipped} 天没看"
+            f"(要全看设 ASTOCK_RATING_BUDGET=600)")
         say()
     if not rows:
         say(f"（回看 {days} 天没有找到 {code} 的评级记录 —— "
@@ -219,9 +321,10 @@ def main():
     say(f"# {code} 券商一致预期与评级")
     say()
     say(f"> 生成时间 {dt.datetime.now():%Y-%m-%d %H:%M}　·　"
-        f"数据源 同花顺(盈利预测) + 巨潮(评级变动)")
+        f"数据源 同花顺(盈利预测) + 东财研报、巨潮(评级变动)")
     say()
     profits = sec_forecast(code)
+    sec_ratings_em(code, a.days)
     sec_ratings(code, a.days)
     sec_ev_hint(code, profits)
 

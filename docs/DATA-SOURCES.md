@@ -2,6 +2,9 @@
 
 > 实测日期 **2026-09-02** · 42 条,通 **41** 条 · 探测机器:MacBook(Clash TUN 开着)
 >
+> 2026-11-11 增补 2 条(腾讯美股日线、东财个股融资余额历史),当天只实测了这两条;
+> 其余各行仍是 2026-09-02 的结果,上面的「42 条」不含这两条。
+>
 > **这份清单的表格不是手写的,是每次真调一次生成的。**
 > 手写的数据源清单必然过期 —— 2026-09-01 就发现三条记成「拿不到」的
 > (Motley Fool 电话会纪要 / roic.ai / stockanalysis.com)其实一直是通的,
@@ -81,6 +84,7 @@ tools/data_digest.py --code 300502 --overseas --pdf                  # 出文档
 | [**新浪实时快照**](https://hq.sinajs.cn/list=sz300502) ⭐ | 同步 | 五档/最新价/成交量 | `tools/astock.py` | ✅ 通 · 有报价 |
 | [**腾讯实时/逐笔**](http://qt.gtimg.cn/q=sz300502) ⭐ | 同步 | 快照 + 逐笔明细 | `tools/astock.py` | ✅ 通 · 有报价 |
 | [**腾讯日线(前复权)**](https://web.ifzq.gtimg.cn/appstock/app/fqkline/get?param=sz300502,day,,,60,qfq) | 滞后 | OHLCV 历史 | `tools/astock.py` | ✅ 通 · 60 根 |
+| [**腾讯美股日线(前复权)**](https://web.ifzq.gtimg.cn/appstock/app/usfqkline/get?param=usNVDA.OQ,day,,,30,qfq) | 领先 | 海外同业股价第二来源。代码要带交易所后缀(.OQ 纳斯达克 / .N 纽交所) | `tools/swing.py us` | ✅ 通 · 30 根,末 2026-11-11 |
 | [**baostock 日线+估值**](http://baostock.com/baostock/index.php/A股K线数据) ⭐ | 滞后 | OHLCV + **peTTM/pbMRQ/psTTM**(历史分位的唯一来源) | `baostock query_history_k_data_plus` | ✅ 通 · 22 根,末 peTTM=42.810370 |
 | [**新浪美股日线**](https://finance.sina.com.cn/stock/usstock/) | 领先 | 海外同业股价(市场先反应) | `akshare stock_us_daily` | ✅ 通 · 9387 行 × 6 列 |
 
@@ -125,6 +129,7 @@ tools/data_digest.py --code 300502 --overseas --pdf                  # 出文档
 | 数据源(点名字进官方页) | 属性 | 拿到什么 | 怎么拿 | 实测 |
 |---|---|---|---|---|
 | [**融资融券(深)**](https://www.szse.cn/disclosure/margin/margin/) | 同步 | 融资余额 / 当日买入 | `akshare stock_margin_detail_szse` | ✅ 通 · 2101 行 × 8 列 |
+| [**个股融资余额历史(东财)**](https://data.eastmoney.com/rzrq/detail/300502.html) | 同步 | 单只股票逐日融资余额与净买入,一次请求取一年 | `tools/swing.py margin` | ✅ 通 · 1747 日,末 2026-11-10 |
 | [**限售解禁**](https://data.eastmoney.com/dxf/) | **领先** | 未来解禁日期与市值 | `akshare stock_restricted_release_detail_em` | ✅ 通 · 620 行 × 12 列 |
 
 ### 5 一致预期与评级
@@ -186,7 +191,7 @@ tools/data_digest.py --code 300502 --overseas --pdf                  # 出文档
 | 想要 | 为什么拿不到 | 证据 | 影响 |
 |---|---|---|---|
 | **北向资金个股净买方向** | 监管 2024-08-19 起停止日终披露,改按季公布。**不是接口坏了** | 交易所公告 | 中。能拿成交额与参与度,拿不到方向。全行业都没有,不是付费能解 |
-| **海关 HS 85177060 光模块月度出口** | 海关总署 412(WAF 挡爬虫,真浏览器也过不去);统计局 403;东财宏观只有进出口总额无 HS 分项 | 2026-08-31 实测 | 中低。光模块出口是行业景气的直接量,拿不到只能用同业营收替代 |
+| **海关 HS 85177060 光模块月度出口** | 海关总署 412(WAF 挡爬虫,真浏览器也过不去);统计局 403;东财宏观只有进出口总额无 HS 分项 | 2026-08-31 实测;2026-11-11 复测 stats.customs.gov.cn 与 www.customs.gov.cn,笔记本和 Mac mini 两种网络都回 412 | 中低。光模块出口是行业景气的直接量,拿不到只能用同业营收替代 |
 | **LightCounting 全行业月度出货/现货报价** | 付费库独有 | — | 低。研报能给单家公司的量价,给不了全行业序列 |
 | **审计意见(非标/保留)** | 免费源无干净接口 | a-stock-ai spec 11 实测 | 中。可用公告关键词代理(「非标/保留意见/问询函/立案/事务所变更」),召回不如付费字段 |
 | **财报重述追踪(真 PIT)** | baostock 给的是**重述后的数字配原始 pubDate**,重述级前视免费消不掉 | a-stock-ai spec 11 | 中。免费档只能诚实标注为「**首次披露口径 PIT**」,不是「无未来函数」 |

@@ -98,6 +98,7 @@ alias sectors='$VENV/bin/python $LAB/tools/sectors.py'
 alias dreport='$VENV/bin/python $LAB/tools/deep_report.py'
 alias probe_sources='$VENV/bin/python $LAB/tools/probe_sources.py'
 alias board='$VENV/bin/python $LAB/tools/board.py'
+alias swing='$VENV/bin/python $LAB/tools/swing.py'
 ALIASEOF
 echo "  ✅ $LAB/aliases.sh"
 echo "     source $LAB/aliases.sh        # 本次会话生效"

@@ -112,6 +112,14 @@ def build() -> list[tuple[Probe, callable]]:
               "tools/astock.py", "https://web.ifzq.gtimg.cn/appstock/app/fqkline/get?param=sz300502,day,,,60,qfq"),
         lambda p: http(p, ok=lambda r: f"{len(r.json()['data']['sz300502']['qfqday'])} 根"))
 
+    # 海外同业股价的第二来源(2026-11-11 加):新浪美股日线在走海外节点的机器上不通,
+    # yfinance 会被限流整批失败;这条在两种网络下都通。
+    add(Probe("1 行情与技术位", "腾讯美股日线(前复权)", "领先",
+              "海外同业股价第二来源。代码要带交易所后缀(.OQ 纳斯达克 / .N 纽交所)",
+              "tools/swing.py us",
+              "https://web.ifzq.gtimg.cn/appstock/app/usfqkline/get?param=usNVDA.OQ,day,,,30,qfq"),
+        lambda p: http(p, ok=_us_daily_ok))
+
     add(Probe("1 行情与技术位", "baostock 日线+估值", "滞后",
               "OHLCV + **peTTM/pbMRQ/psTTM**(历史分位的唯一来源)",
               "baostock query_history_k_data_plus", "http://baostock.com/baostock/index.php/A股K线数据", required=True),
@@ -222,6 +230,20 @@ def build() -> list[tuple[Probe, callable]]:
     add(Probe("4 杠杆与解禁", "融资融券(深)", "同步", "融资余额 / 当日买入",
               "akshare stock_margin_detail_szse", "https://www.szse.cn/disclosure/margin/margin/"),
         lambda p: _ak(p, "stock_margin_detail_szse", date="20260828"))
+
+    # 交易所接口是「一天一张全市场表」,看一只股票一年的变化要取两百多次;
+    # 东财这张表按股票给逐日序列,一次请求就够(2026-11-11 加)。
+    add(Probe("4 杠杆与解禁", "个股融资余额历史(东财)", "同步",
+              "单只股票逐日融资余额与净买入,一次请求取一年",
+              "tools/swing.py margin",
+              "https://data.eastmoney.com/rzrq/detail/300502.html"),
+        lambda p: http(p, url="https://datacenter-web.eastmoney.com/api/data/v1/get",
+                       params={"reportName": "RPTA_WEB_RZRQ_GGMX",
+                               "columns": "DATE,SCODE,RZYE,RZJME",
+                               "filter": '(SCODE="300502")', "sortColumns": "DATE",
+                               "sortTypes": "-1", "pageSize": 5, "pageNumber": 1},
+                       headers={"User-Agent": UA, "Referer": "https://data.eastmoney.com/"},
+                       ok=_em_margin_ok))
 
     add(Probe("4 杠杆与解禁", "限售解禁", "**领先**", "未来解禁日期与市值",
               "akshare stock_restricted_release_detail_em", "https://data.eastmoney.com/dxf/"),
@@ -509,6 +531,22 @@ def _ef(p: Probe, fn_name, arg="300502"):
     except Exception as e:
         p.status, p.detail = "FAIL", f"{type(e).__name__}: {e}"[:110]
     p.ms = int((time.time() - t0) * 1000)
+
+
+def _us_daily_ok(r):
+    """腾讯美股日线:后缀写错时照样回 200,给的是多年前的数据,所以要看最后一根的日期。"""
+    import datetime as dt
+    k = r.json()["data"]["usNVDA.OQ"]
+    k = k.get("qfqday") or k.get("day")
+    last = k[-1][0]
+    if (dt.date.today() - dt.date.fromisoformat(last)).days > 10:
+        raise ValueError(f"最新一根是 {last},太旧")
+    return f"{len(k)} 根,末 {last}"
+
+
+def _em_margin_ok(r):
+    res = r.json()["result"]
+    return f"{res['count']} 日,末 {res['data'][0]['DATE'][:10]}"
 
 
 def _em_survey(p: Probe):
