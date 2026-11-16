@@ -5,6 +5,8 @@
     market regime                      # 现在:创业板指 vs 60 日线 + 全市场融资余额方向
     market backtest --since 2014-01-01 # 这条规则过去十几年会怎样:少跌多少、来回几次
     market peer 300308 300502          # 同行两只近 10 / 20 个交易日走势差多少
+    market rescue 300308 300502        # 问「会不会救市」:指数离高点多远,和过去汇金出手那天比;
+                                       # 出手后指数和这几只走了多少
     market --self-test                 # 用假数据检查计算本身
 
 为什么要有这一层(2026-10-29 复核时发现):
@@ -42,12 +44,33 @@ MA_N = 60
 GAP_PP = 10.0                 # 同行两周差 10 个点以上就标出来
 _UA = {"User-Agent": "Mozilla/5.0"}
 
+# 汇金(国家队)公开表态增持的日子 = 公告发出的那个交易日(盘中发的,当天涨跌已含公告反应)。
+# 只收「有官方公告」的;悄悄买、事后从 ETF 份额才看出来的不在这里(那种看 ETF 份额变动)。
+# 出处(2026-11-16 WebSearch 核过):
+#   2023-10-11 增持四大行、2023-10-23 宣布买入 ETF:财联社 https://www.cls.cn/detail/1591772
+#   2024-02-06 「已扩大 ETF 增持范围」:每日经济新闻 https://www.nbd.com.cn/articles/2024-02-06/3239191.html
+#   2025-04-07 盘中「已再次增持 ETF」,央行同时说给再贷款:财联社 https://www.cls.cn/detail/1995001
+# 新的公开表态出来就往这里加一行。
+RESCUE_DAYS = [("2023-10-11", "增持四大行股份"),
+               ("2023-10-23", "宣布买入 ETF"),
+               ("2024-02-06", "小盘股流动性危机后,宣布扩大 ETF 增持"),
+               ("2025-04-07", "关税冲击当天(上证 -7.34%),盘中宣布再次增持 ETF")]
+RESCUE_INDEX = [("sh000001", "上证"), ("sh000300", "沪深300"),
+                ("sz399006", "创业板"), ("sh000688", "科创50")]
+RESCUE_AFTER = (1, 5, 20, 60)
+
 
 # ── 取数 ────────────────────────────────────────────────────────────────────
+# 只连腾讯、东财两个国内站,一律直连。上面清环境变量关不掉 macOS 系统代理:
+# urllib 照样读系统设置走 127.0.0.1:7897,腾讯握手超时 / SSL EOF(2026-11-16 笔记本 ssh 实测,
+# getproxies() 回 7897;同一 URL 用空 ProxyHandler 直连 200)。
+_OPENER = urllib.request.build_opener(urllib.request.ProxyHandler({}))
+
+
 def _get_json(url, params=None):
     if params:
         url += "?" + urllib.parse.urlencode(params)
-    with urllib.request.urlopen(urllib.request.Request(url, headers=_UA)) as r:
+    with _OPENER.open(urllib.request.Request(url, headers=_UA)) as r:
         return json.loads(r.read().decode("utf-8"))
 
 
@@ -157,6 +180,28 @@ def peer_gap(a, b, days):
     (d0, a0), (d1, a1) = common[-1 - days], common[-1]
     ra, rb = (a1 / a0 - 1) * 100, (db[d1] / db[d0] - 1) * 100
     return {"from": d0, "to": d1, "a": ra, "b": rb, "gap": ra - rb}
+
+
+def off_high(rows, i, win):
+    """rows[i] 收盘离它之前 win 个交易日(含当天)最高收盘多远 → (最高日, 最高价, 百分比)。"""
+    w = rows[max(0, i - win + 1):i + 1]
+    hd, hv = max(w, key=lambda x: x[1])
+    return hd, hv, (rows[i][1] / hv - 1) * 100
+
+
+def after_event(rows, day, ns=RESCUE_AFTER):
+    """从 day 收盘起算,之后 n 个交易日的涨跌 % 和之后最大 n 天内的最低点。
+    day 不是交易日(或没数据)返回 None;往后不够 n 天的那一项是 None。"""
+    ds = [d for d, _ in rows]
+    if day not in ds:
+        return None
+    i = ds.index(day)
+    base = rows[i][1]
+    out = {n: ((rows[i + n][1] / base - 1) * 100 if i + n < len(rows) else None) for n in ns}
+    tail = rows[i:i + max(ns) + 1]
+    ld, lv = min(tail, key=lambda x: x[1])
+    return {"day_chg": (base / rows[i - 1][1] - 1) * 100 if i > 0 else None,
+            "after": out, "low_day": ld, "low": (lv / base - 1) * 100}
 
 
 def max_drawdown(curve):
@@ -277,7 +322,73 @@ def peer_lines(code_a, code_b, gap=GAP_PP, title=None):
     return L + [""]
 
 
+def rescue_lines(codes=(), title=None):
+    """「会不会救市」的原始数,返回 markdown 行。只出数,不出概率 —— 概率要结合当天消息判断。"""
+    sym = lambda c: c if c[:2] in ("sh", "sz") else ("sh" if c.startswith(("6", "9")) else "sz") + c
+    items = list(RESCUE_INDEX) + [(sym(c), c) for c in codes]
+    # 最早那次之前要够 60 个交易日算「距 60 日高」,往前多取 150 个自然日
+    start = (dt.date.fromisoformat(min(d for d, _ in RESCUE_DAYS)) - dt.timedelta(days=150)).isoformat()
+    L = [title or "## 救市对照:现在离高点多远,过去汇金公开出手那天离高点多远", "",
+         "| 标的 | 最新收盘 | 当天 | 距 60 日最高 | 距 250 日最高 |"
+         + "".join(f" {d} 那天距 60 日高 |" for d, _ in RESCUE_DAYS),
+         "|---|---|---|---|---|" + "---|" * len(RESCUE_DAYS)]
+    after, fails, lastd = [], [], {}
+    for s, nm in items:
+        try:
+            r = fetch_daily(s, start, fq="qfq")
+        except Exception as e:
+            fails.append(f"{nm}({s})取数失败 {type(e).__name__}")
+            continue
+        if len(r) < 2:
+            fails.append(f"{nm}({s})没有日线")
+            continue
+        i = len(r) - 1
+        lastd[nm] = r[-1][0]
+        _, _, p60 = off_high(r, i, 60)
+        hd, hv, p250 = off_high(r, i, 250)
+        cells = []
+        ds = [d for d, _ in r]
+        for d, _ in RESCUE_DAYS:
+            cells.append(f" {off_high(r, ds.index(d), 60)[2]:+.1f}% |" if d in ds else " — |")
+        L.append(f"| {nm} | {r[-1][0]} {r[-1][1]:,.2f} | {(r[-1][1] / r[-2][1] - 1) * 100:+.2f}% | "
+                 f"{p60:+.1f}% | {p250:+.1f}%({hd} {hv:,.2f}) |" + "".join(cells))
+        for d, _ in RESCUE_DAYS:
+            ev = after_event(r, d)
+            if ev:
+                after.append((nm, d, ev))
+    L += ["", "### 汇金公开出手之后(从出手日收盘算)", "",
+          "| 标的 | 出手日 | 当天 |" + "".join(f" {n} 日后 |" for n in RESCUE_AFTER) + " 之后最低 |",
+          "|---|---|---|" + "---|" * len(RESCUE_AFTER) + "---|"]
+    f = lambda v: "—" if v is None else f"{v:+.1f}%"
+    for nm, d, ev in after:
+        L.append(f"| {nm} | {d} | {f(ev['day_chg'])} |"
+                 + "".join(f" {f(ev['after'][n])} |" for n in RESCUE_AFTER)
+                 + f" {ev['low_day']} {ev['low']:+.1f}% |")
+    L += ["", "出手日的背景:" + ";".join(f"{d} {why}" for d, why in RESCUE_DAYS) + "。",
+          "",
+          "读法:",
+          f"- 样本只有 {len(RESCUE_DAYS)} 次;对比时看「当天」那列和距高点那列,分清是急跌后出手还是阴跌中出手。",
+          "- 汇金买的是宽基 ETF:指数被托住时,个股可以照跌(2026-11-16 上证 -0.87%、银行创新高,中际 -12.3%)。",
+          "- 出手后个股涨多少,要看当时这个行业自己的需求在往哪走,别把出手后的涨幅算到救市头上。",
+          "- 有没有人悄悄在买,看第二天早上财联社电报里的「股票型 ETF 份额变动」(510300 / 510330 份额增加才算);"
+          "尾盘成交放大分不出是在买还是在卖。"]
+    if lastd and len(set(lastd.values())) > 1:
+        newest = max(lastd.values())
+        old = [f"{nm} {d}" for nm, d in lastd.items() if d < newest]
+        # 2026-11-16 收盘后实测:个股前复权按日期段取,当天那根还没出,指数已经有了
+        L += ["", f"⚠ 最新一根日期不一样(最新 {newest}):" + "、".join(old)
+              + " —— 这几只的「最新收盘 / 距高点」是旧一天的,当天的看 astock 快照。"]
+    if fails:
+        L += ["", "取数失败:" + ";".join(fails)]
+    return L + [""]
+
+
 # ── 命令 ────────────────────────────────────────────────────────────────────
+def cmd_rescue(a):
+    print("\n".join(rescue_lines(a.codes)))
+    return 0
+
+
 def cmd_regime(a):
     print("\n".join(regime_lines(a.index, a.ma, a.confirm)))
     return 0
@@ -354,6 +465,17 @@ def self_test():
     ds2 = [(dt.date(2020, 1, 1) + dt.timedelta(days=i)).isoformat() for i in range(len(two))]
     ep2 = episodes(ds2, two, regime(two, 20, 1), 25)
     ok("反弹超过同样幅度但没回前高 → 算两段", len(ep2) == 2, [(e["peak_v"], e["trough_v"]) for e in ep2])
+    # 救市对照:100 涨到 120 再跌到 90
+    rr = [("d%02d" % i, float(v)) for i, v in enumerate(list(range(100, 121)) + list(range(119, 89, -1)))]
+    hd, hv, p = off_high(rr, len(rr) - 1, 60)
+    ok("距高点:120 → 90 是 -25%", hd == "d20" and hv == 120 and abs(p + 25) < 1e-9, (hd, hv, p))
+    _, hv5, _ = off_high(rr, len(rr) - 1, 5)
+    ok("距高点:窗口只看最近 5 天,高点是 94", hv5 == 94, hv5)
+    ev = after_event(rr, "d20", (1, 5))
+    ok("出手后:120 起 1 日 119、5 日 115", ev and abs(ev["after"][1] - (119 / 120 - 1) * 100) < 1e-9
+       and abs(ev["after"][5] - (115 / 120 - 1) * 100) < 1e-9, ev)
+    ok("出手后:往后不够天数的那项是 None", after_event(rr, "d48", (1, 5))["after"][5] is None)
+    ok("出手后:日期不在数据里返回 None", after_event(rr, "2099-01-01") is None)
     print("✅ 全过" if not fails else f"❌ {fails} 项不过")
     return 1 if fails else 0
 
@@ -378,11 +500,14 @@ def main():
     pr.add_argument("a")
     pr.add_argument("b")
     pr.add_argument("--gap", type=float, default=GAP_PP)
+    rs = sub.add_parser("rescue", help="会不会救市:指数离高点多远,和过去汇金出手那天比")
+    rs.add_argument("codes", nargs="*", help="再加几只个股看出手后怎么走,如 300308 300502")
     a = p.parse_args()
     if not a.cmd:
         print(__doc__)
         return 1
-    return {"regime": cmd_regime, "backtest": cmd_backtest, "peer": cmd_peer}[a.cmd](a)
+    return {"regime": cmd_regime, "backtest": cmd_backtest, "peer": cmd_peer,
+            "rescue": cmd_rescue}[a.cmd](a)
 
 
 if __name__ == "__main__":
